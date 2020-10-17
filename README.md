@@ -3,7 +3,7 @@
 * Achieves a state-of-the-art performance on visual dialog model (on MRR) 
 * Part of 2020 visual dialog challenge winning submission.
 
-This repository is the official implementation of Factor Graph Attention (https://arxiv.org/abs/1904.05880).
+This repository is the official implementation of [Factor Graph Attention](https://arxiv.org/abs/1904.05880).
 (Appeared in CVPR'19)
 
 <p float="left">
