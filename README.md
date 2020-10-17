@@ -156,7 +156,7 @@ For the legacy version, please contact via email
 ## Contributing
 
 Please cite Factor Graph Attention if you use this work in your research:
-
+```
 @inproceedings{schwartz2019factor,
   title={Factor graph attention},
   author={Schwartz, Idan and Yu, Seunghak and Hazan, Tamir and Schwing, Alexander G},
@@ -164,3 +164,4 @@ Please cite Factor Graph Attention if you use this work in your research:
   pages={2039--2048},
   year={2019}
 }
+```
