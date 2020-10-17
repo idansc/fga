@@ -1,7 +1,11 @@
 # Factor Graph Attention
 
+### A state-of-the-art visual dialog model (on MRR) and part of 2020 visual dialog challange winning submission.
+
 This repository is the official implementation of Factor Graph Attention (https://arxiv.org/abs/1904.05880).
 (Appeared in CVPR'19)
+
+You can also follow (https://github.com/idansc/mrr-ndcg), the ensemble approach for the 2020 challange will be released there. 
 
 <p float="left">
   <img src="imgs/fga.png" height="40%" width="40%"/>
