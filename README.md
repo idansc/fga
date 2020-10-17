@@ -1,6 +1,6 @@
 # Factor Graph Attention
 
-### A state-of-the-art visual dialog model (on MRR) and part of 2020 visual dialog challange winning submission.
+### A state-of-the-art visual dialog model (on MRR) and part of 2020 visual dialog challenge winning submission.
 
 This repository is the official implementation of Factor Graph Attention (https://arxiv.org/abs/1904.05880).
 (Appeared in CVPR'19)
