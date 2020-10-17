@@ -11,8 +11,8 @@ This repository is the official implementation of [Factor Graph Attention](https
   <img src="/imgs/model.png"" height="50%" width="50%"/> 
 </p>
 
-You can also follow (https://github.com/idansc/mrr-ndcg), the ensemble approach for the 2020 challange will be released there. 
-Another usecase of FGA can be found here (https://github.com/idansc/simple-avsd)
+* You can also follow (https://github.com/idansc/mrr-ndcg), the ensemble approach for the 2020 challange will be released there. 
+* Use-case of FGA for videos can be found here (https://github.com/idansc/simple-avsd)
 
 ## Requirements
 
