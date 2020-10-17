@@ -130,17 +130,12 @@ You can download pertained models here:
 
 ## Results
 
-Evaluation is done on ### [VisDialv1.0](https://visualdialog.org/data).
+Evaluation is done on [VisDialv1.0](https://visualdialog.org/data).
 
 Short description:
 
 VisDial v1.0 contains 1 dialog with 10 question-answer pairs (starting from an image caption) on ~130k images
-from COCO-trainval and Flickr, totalling ~1.3 million question-answer pairs. The v1.0 training set consists
-of dialogs on ~120k images from COCO-trainval, while the validation and test sets consist of dialogs on an additional
-~10k COCO-like images from Flickr. We have worked closely with the COCO team to ensure that these additional images
-match the distribution of images and captions of the training set.
-
-
+from COCO-trainval and Flickr, totalling ~1.3 million question-answer pairs. 
 
 Our model achieves the following performance on the validation set, and similar results on test-std/test-challenge.
 
