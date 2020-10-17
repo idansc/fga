@@ -3,9 +3,10 @@
 This repository is the official implementation of Factor Graph Attention (https://arxiv.org/abs/1904.05880).
 (Appeared in CVPR'19)
 
-
-<img src="imgs/fga.png">
-<img src="imgs/model.png">
+<p float="left">
+  <img src="imgs/fga.png" height="40%" width="40%"/>
+  <img src="/imgs/model.png"" height="50%" width="50%"/> 
+</p>
 
 ## Requirements
 
