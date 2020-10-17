@@ -22,9 +22,8 @@ To install requirements:
 conda env create -f fga.yml
 ```
 
-following with:
+follows with:
 ```
- conda env create -f fga.yml
  conda activate fga
 ```
 
