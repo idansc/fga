@@ -1,5 +1,5 @@
 # Factor Graph Attention
-* A general multimodal attention approach inspired from probability graphical models. 
+* A general multimodal attention approach inspired from probabilistic graphical models. 
 * Achieves a state-of-the-art performance (MRR) on visual dialog task.
 * Part of 2020 visual dialog challenge winning submission.
 
