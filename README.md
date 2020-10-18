@@ -1,6 +1,6 @@
 # Factor Graph Attention
 * A general multimodal attention approach inspired from probability graphical models. 
-* Achieves a state-of-the-art performance on visual dialog model (on MRR) 
+* Achieves a state-of-the-art performance (MRR) on visual dialog task.
 * Part of 2020 visual dialog challenge winning submission.
 
 This repository is the official implementation of [Factor Graph Attention](https://arxiv.org/abs/1904.05880).
