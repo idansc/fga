@@ -255,7 +255,7 @@ if __name__ == '__main__':
                 hidden_ans_dim=args.hidden_ans_dim,
                 hidden_hist_dim=args.hidden_hist_dim,
                 hidden_cap_dim=args.hidden_cap_dim,
-                hidden_img_dim=args.hidden_img_dim)
+                hidden_img_dim=img_features_dim)
 
 
     # Multiple GPUs batch parallel

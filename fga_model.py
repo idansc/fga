@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from atten import Atten
 
-IMG_DIM = 2048
 
 
 class FGA(nn.Module):
@@ -30,7 +29,7 @@ class FGA(nn.Module):
         self.hidden_ques_dim = hidden_ques_dim
         self.hidden_ans_dim = hidden_ans_dim
         self.hidden_cap_dim = hidden_cap_dim
-        self.hidden_img_dim = hidden_img_dim if hidden_img_dim != -1 else IMG_DIM
+        self.hidden_img_dim = hidden_img_dim
         self.hidden_hist_dim = hidden_hist_dim
 
         # Vocab of History LSTMs is one more as we are keeping a stop id (the last id)
@@ -44,10 +43,6 @@ class FGA(nn.Module):
 
         self.lstm_hist_cap = nn.LSTM(word_embed_dim, self.hidden_cap_dim, batch_first=True)
 
-        if self.hidden_img_dim != -1:
-            self.img_embedding = nn.Conv1d(IMG_DIM, self.hidden_img_dim, 1)
-        else:
-            self.img_embedding = nn.Identity()
 
         self.qahistnet = nn.Sequential(
             nn.Linear(self.hidden_hist_dim*2, self.hidden_hist_dim),
@@ -148,7 +143,7 @@ class FGA(nn.Module):
         self.lstm_hist_cap.flatten_parameters()
 
 
-        i_feat = self.img_embedding(i_e.transpose(1,2)).transpose(1,2)
+        i_feat = i_e
 
         q_seq, self.hidden_ques = self.lstm_ques(q_we)
         a_seq, self.hidden_ans = self.lstm_ans(a_we)
