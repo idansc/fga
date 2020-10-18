@@ -60,8 +60,7 @@ python train.py --batch-size  128 \
              --lstm-initialization "he" \
              --log-interval 3000 \
              --test-after-every 1 \
-             --word-embed-dim 256 \
-             --hidden-img-dim -1 \
+             --word-embed-dim 200 \
              --hidden-ans-dim 512 \
              --hidden-hist-dim 128 \
              --hidden-cap-dim 128 \
@@ -90,8 +89,7 @@ python train.py --batch-size  128 \
              --lstm-initialization "he" \
              --log-interval 3000 \
              --test-after-every 1 \
-             --word-embed-dim 256 \
-             --hidden-img-dim -1 \
+             --word-embed-dim 200 \
              --hidden-ans-dim 512 \
              --hidden-hist-dim 128 \
              --hidden-cap-dim 128 \
@@ -117,8 +115,7 @@ python train.py --batch-size  128 \
              --lstm-initialization "he" \
              --log-interval 3000 \
              --test-after-every 1 \
-             --word-embed-dim 256 \
-             --hidden-img-dim -1 \
+             --word-embed-dim 200 \
              --hidden-ans-dim 512 \
              --hidden-hist-dim 128 \
              --hidden-cap-dim 128 \
