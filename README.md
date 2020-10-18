@@ -38,9 +38,9 @@ Add the following files under data dir:
 [visdial_data.h5](https://technionmail-my.sharepoint.com/:u:/g/personal/idansc_campus_technion_ac_il/EczwqWX5lBVAizIfpLauq1kB-s8oaZpF93drq5y8TOiRjQ?e=8NqsoY)
 
 Pretrained features:
-Soon uploading
+*Soon uploading*
 - [VGG]() A grid image features based on the VGG model pretrained on ImageNet.
-- [F-RCNN]() based on object detector, 37 proposals, based on ResNetx101, fine-tuned on VisualGnome.
+- [F-RCNN]() based on object detector with ResNetx101 backbone, 37 proposals, fine-tuned on [Visual Genome](https://visualgenome.org/).
 
 
 ## Training
