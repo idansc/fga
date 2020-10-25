@@ -126,7 +126,7 @@ python train.py --batch-size  128 \
 
 You can download pertained models here:
 
-- [uploading]() trained on VisDial1.0 using F-RCNN features
+- [best_model_mrr.pth.tar](https://technionmail-my.sharepoint.com/:u:/g/personal/idansc_campus_technion_ac_il/ERPmIvn5ebNJjvQuGFIMOtMB8c9y-ju1EI9YurJXUtEcGg?e=MunQsV) trained on VisDial1.0 using F-RCNN features
 
 
 ## Results
