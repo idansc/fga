@@ -40,7 +40,7 @@ Add the following files under data dir:
 Pretrained features:
 - [VGG](https://technionmail-my.sharepoint.com/:u:/g/personal/idansc_campus_technion_ac_il/EW24M8TvIkpEmxgAGEml4UkBSvXkA98olGNwaRaK088-CA?e=Pwz8xz) A grid image features based on the VGG model pretrained on ImageNet *(Faster)*. Note, the h5 databases has slightly different dataset keys, therfore the code needs to be adapted accordingly. 
 - [F-RCNN](https://technionmail-my.sharepoint.com/:u:/g/personal/idansc_campus_technion_ac_il/EYI1O4xal4NKvQXjTN-f4JIB2a-Jp3N6Bw_xpolFh2q69g?e=4koOZY) based on object detector with ResNetx101 backbone, 37 proposals, fine-tuned on [Visual Genome](https://visualgenome.org/). *Achives SOTA*. The file includes boxes and classes information. 
-
+**Note:** You can use [CurlWget](https://chrome.google.com/webstore/detail/curlwget/dgcfkhmmpcmkikfmonjcalnjcmjcjjdn) to easily download the features on your server. 
 See the original paper for performance differences. I recommand using the FRCNN features, mainly because it is finetuned on the relevant VisualGenome dataset. 
 
 
