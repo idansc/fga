@@ -1,7 +1,7 @@
 # Factor Graph Attention
 * A general multimodal attention approach inspired by probabilistic graphical models. 
 * Achieves a state-of-the-art performance (MRR) on visual dialog task.
-* Part of 2020 visual dialog challenge winning submission.
+
 
 This repository is the official implementation of [Factor Graph Attention](https://arxiv.org/abs/1904.05880).
 (Appeared in CVPR'19)
@@ -11,7 +11,7 @@ This repository is the official implementation of [Factor Graph Attention](https
   <img src="/imgs/model.png"" height="50%" width="50%"/> 
 </p>
 
-* You can also follow (https://github.com/idansc/mrr-ndcg), the ensemble approach for the 2020 challange will be released there. 
+* Part of 2020 visual dialog challenge winning submission (https://github.com/idansc/mrr-ndcg)
 * Use-case of FGA for videos can be found here (https://github.com/idansc/simple-avsd)
 
 ## Requirements
