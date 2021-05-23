@@ -85,7 +85,7 @@ python train.py --batch-size  128 \
              --lr 1e-3 \
              --opt 0 \
              --only_val T \
-             --model-pathname "models/baseline"
+             --model-pathname "models/baseline" \
              --folder-prefix "baseline" \
              --mode "FGA" \
              --initialization "he" \
@@ -111,7 +111,7 @@ python train.py --batch-size  128 \
              --lr 1e-3 \
              --opt 0 \
              --submission T \
-             --model-pathname "models/baseline"
+             --model-pathname "models/baseline" \
              --folder-prefix "baseline" \
              --mode "FGA" \
              --initialization "he" \
