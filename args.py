@@ -1,6 +1,6 @@
 import argparse
 def get_parser():
-    parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
+    parser = argparse.ArgumentParser(description='Factor Graph Attention')
     parser.add_argument('--batch-size', type=int, default=64,
                         help='input batch size for training (default: 64)')
     parser.add_argument('--val-batch-size', type=int, default=64,
