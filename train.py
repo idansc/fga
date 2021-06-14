@@ -341,7 +341,7 @@ if __name__ == '__main__':
         copy2("./train.py", mydir + "/")
         copy2("./fga_model.py", mydir + "/")
         copy2("./utils.py", mydir + "/")
-        copy2("./run_test", mydir + "/")
+        #copy2("./run_test", mydir + "/")
 
     '''
      Creating output files
