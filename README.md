@@ -12,7 +12,10 @@ This repository is the official implementation of [Factor Graph Attention](https
 </p>
 
 * Part of 2020 visual dialog challenge winning submission (https://github.com/idansc/mrr-ndcg)
-* Use-case of FGA for videos can be found here (https://github.com/idansc/simple-avsd)
+Use cases of FGA: 
+* Video dialog, spatial interactions between frames, can be found here (https://github.com/idansc/simple-avsd)
+* Spatial navigation,  can be found here (https://github.com/barmayo/spatial_attention)   
+* Video retrieval, between text query and clips, can be found here (https://github.com/AmeenAli/VideoMatch)                                                      
 
 ## Requirements
 
