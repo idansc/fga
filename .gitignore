@@ -18,3 +18,6 @@ dist/
 .idea/
 .pytest_cache/
 .ruff_cache/
+
+# staged hub payload (config.json is generated)
+hub/model/config.json
