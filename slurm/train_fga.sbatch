@@ -46,6 +46,15 @@ fi
 nvidia-smi
 python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
 
+# Validate the data before spending the allocation. This checks every dataset key,
+# shape and index range, then runs two real optimizer steps; `set -e` aborts the
+# job here rather than at step 0 of a 48-hour run.
+python scripts/check_data.py \
+    --visdial_data_path      "$DATA_DIR/visdial_data.h5" \
+    --visdial_params_path    "$DATA_DIR/visdial_params.json" \
+    --image_features_path    "$DATA_DIR/frcnn_features_new.h5" \
+    --dense_annotations_path "$DATA_DIR/visdial_1.0_val_dense_annotations.json"
+
 # One GPU is enough for the paper configuration. For several, replace `python`
 # with `torchrun --nproc_per_node=$SLURM_GPUS_ON_NODE` -- Trainer handles DDP.
 python scripts/run_visual_dialog.py \
