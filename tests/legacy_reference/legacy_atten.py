@@ -1,3 +1,11 @@
+"""Verbatim copy of the pre-refactor model, kept only as a numerical oracle.
+
+Do not import this outside the test suite and do not fix anything here: its whole
+value is being byte-for-byte the code that produced the published numbers, so
+`test_equivalence.py` can prove the refactor did not change the math.
+The single edit is the relative import below.
+"""
+
 #!/usr/bin/env python
 import torch
 import torch.nn as nn
