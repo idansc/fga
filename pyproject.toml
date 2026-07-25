@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fga"
+version = "1.0.0"
+description = "Factor Graph Attention: a general multimodal attention module (CVPR 2019)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Idan Schwartz" }]
+keywords = ["visual-dialog", "attention", "multimodal", "factor-graph", "visdial"]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.40",
+    "safetensors>=0.4",
+    "numpy>=1.23",
+    "h5py>=3.7",
+]
+
+[project.optional-dependencies]
+train = ["accelerate>=0.26", "datasets>=2.14", "tensorboard"]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+[project.urls]
+Homepage = "https://github.com/idansc/fga"
+Paper = "https://arxiv.org/abs/1904.05880"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 119
+target-version = "py39"
+exclude = ["tests/legacy_reference"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# Kept byte-for-byte as the pre-refactor numerical oracle; do not lint or fix.
+"tests/legacy_reference/*" = ["ALL"]

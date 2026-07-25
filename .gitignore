@@ -1,0 +1,20 @@
+# data and model artefacts
+data/
+models/
+*.h5
+*.pth.tar
+*.npy
+submission*.json
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+
+# tooling
+.idea/
+.pytest_cache/
+.ruff_cache/
