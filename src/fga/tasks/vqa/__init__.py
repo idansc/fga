@@ -1,9 +1,5 @@
 """Visual Question Answering with high-order attention.
 
-A PyTorch port of https://github.com/idansc/HighOrderAtten — "High-Order Attention
-Models for Visual Question Answering" (NeurIPS 2017) — rebuilt on
-[`fga.attention`].
-
 Two settings are provided:
 
 * [`HighOrderAttentionForVQA`] — **multiple choice**. Three modalities: question
@@ -15,6 +11,9 @@ Two settings are provided:
   attends question and image only and classifies over the answer vocabulary.
   With two modalities there is no ternary factor to apply, and the answer can no
   longer steer where the model looks.
+
+Ported from https://github.com/idansc/HighOrderAtten, "High-Order Attention Models
+for Visual Question Answering" (NeurIPS 2017).
 """
 
 from .modeling_hoa import (

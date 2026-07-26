@@ -1,8 +1,7 @@
-"""Audio-visual scene-aware dialog, on the FGA attention layer.
+"""Audio-visual scene-aware dialog.
 
-A port of the encoder from https://github.com/idansc/simple-avsd — the AVSD entry
-built on Factor Graph Attention. Six modalities are attended jointly: the question,
-four spatio-temporal video streams, and the audio track.
+Six modalities are attended jointly: the question, four spatio-temporal video
+streams, and the audio track.
 
 What makes this use case distinct from Visual Dialog is that the video arrives as
 *several* streams covering different time spans. They are attended individually,
@@ -12,6 +11,11 @@ against each other after deciding what to look at within each.
 The dialog history is encoded separately and concatenated with the attended
 question to form the state a response decoder consumes. Only the encoder is ported
 here; generation needs the AVSD dataset and a decoder of your choosing.
+
+----
+
+Ported from https://github.com/idansc/simple-avsd, the AVSD entry built on Factor
+Graph Attention.
 """
 
 from dataclasses import dataclass

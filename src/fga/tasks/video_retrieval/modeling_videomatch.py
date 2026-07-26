@@ -1,9 +1,8 @@
-"""Text-to-video retrieval, on the FGA attention layer.
+"""Text-to-video retrieval.
 
-A port of the matching model from https://github.com/AmeenAli/VideoMatch, which
-applies Factor Graph Attention to retrieval: a text query and a video are each a
-sequence — words and clips — and attention decides which clips and which words
-matter *for each other* before the two are compared.
+A text query and a video are each a sequence — words and clips — and attention
+decides which clips and which words matter *for each other* before the two are
+compared.
 
 Retrieval differs from the other use cases in that there is no classifier. The two
 attended representations are scored against each other, and training is
@@ -14,6 +13,10 @@ The attention here deliberately leaves the entity counts unset, as the original
 does, so the pairwise factors mean-marginalize their interaction grid instead of
 learning the marginalization. Clip and word counts vary per example in retrieval,
 and a learned marginalization would fix them.
+
+----
+
+Ported from https://github.com/AmeenAli/VideoMatch.
 """
 
 from dataclasses import dataclass

@@ -1,9 +1,6 @@
-"""Target-driven visual navigation, on the FGA attention layer.
+"""Target-driven visual navigation.
 
-A port of the attention used in https://github.com/barmayo/spatial_attention —
-"Learning to Navigate Using Mid-Level Visual Priors" style target-driven
-navigation, where an agent is told an object to find and must act from egocentric
-observations.
+An agent is told an object to find and must act from egocentric observations.
 
 Two modalities are attended jointly: the word embedding of the target object and
 the spatial grid of the current observation. The attended pair conditions a
@@ -14,6 +11,10 @@ no ranking or classification over candidates: the output is a policy, trained by
 reinforcement learning against navigation episodes rather than by a supervised
 loss. Only the network is ported here — the environment, episodes and A3C training
 loop live in the original repository.
+
+----
+
+Ported from https://github.com/barmayo/spatial_attention.
 """
 
 from dataclasses import dataclass

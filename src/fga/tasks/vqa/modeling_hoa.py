@@ -1,8 +1,4 @@
-"""High-Order Attention for Visual Question Answering, on the FGA attention layer.
-
-A PyTorch port of https://github.com/idansc/HighOrderAtten — "High-Order Attention
-Models for Visual Question Answering" (Schwartz, Schwing and Hazan, NeurIPS 2017),
-originally written in Lua/Torch.
+"""Multiple-choice Visual Question Answering with high-order attention.
 
 Three modalities are attended jointly: the question words, the image regions, and
 the multiple-choice answers. What distinguishes it from the Visual Dialog model is
@@ -11,9 +7,15 @@ pair of modalities can express on its own.
 
 The attention itself is [`fga.attention.FactorGraphAttention`] with a ternary
 interaction declared, so this task adds only its encoders and its scoring head.
-Note that the potentials therefore follow FGA's conventions — normalized
-embeddings, a batch-normalized interaction grid, convolutional marginalization —
-rather than the original's `tanh` and elementwise scaling.
+The potentials therefore follow FGA's conventions — normalized embeddings, a
+batch-normalized interaction grid, convolutional marginalization — rather than the
+original's `tanh` and elementwise scaling.
+
+----
+
+Ported from https://github.com/idansc/HighOrderAtten, "High-Order Attention Models
+for Visual Question Answering" (Schwartz, Schwing and Hazan, NeurIPS 2017),
+originally written in Lua/Torch.
 """
 
 from dataclasses import dataclass

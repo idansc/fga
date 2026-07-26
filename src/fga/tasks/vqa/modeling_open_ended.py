@@ -17,6 +17,11 @@ weaker port:
 
 Everything else — encoders, pooling, classifier — is shared with the
 multiple-choice model.
+
+----
+
+The multiple-choice model this shares its encoders with is ported from
+https://github.com/idansc/HighOrderAtten.
 """
 
 from dataclasses import dataclass
