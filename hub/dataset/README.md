@@ -72,7 +72,7 @@ from huggingface_hub import snapshot_download
 from fga import VisDialDataset
 from fga.data import load_visdial_params, vocab_size_from_params
 
-path = snapshot_download("idansc/visdial-fga-preprocessed", repo_type="dataset")
+path = snapshot_download("Idan/visdial-fga-preprocessed", repo_type="dataset")
 params = load_visdial_params(f"{path}/visdial_params.json")
 
 dataset = VisDialDataset(

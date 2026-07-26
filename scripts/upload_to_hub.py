@@ -129,8 +129,8 @@ def upload_model(api, repo_id: str, model_dir: str, private: bool, dry_run: bool
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--what", choices=["dataset", "model", "both"], default="both")
-    parser.add_argument("--dataset_repo", default="idansc/visdial-fga-preprocessed")
-    parser.add_argument("--model_repo", default="idansc/fga")
+    parser.add_argument("--dataset_repo", default="Idan/visdial-fga-preprocessed")
+    parser.add_argument("--model_repo", default="Idan/fga")
     parser.add_argument("--data_dir", default="data")
     parser.add_argument(
         "--model_dir",

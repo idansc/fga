@@ -9,7 +9,7 @@ tags:
   - attention
   - factor-graph-attention
 datasets:
-  - idansc/visdial-fga-preprocessed
+  - Idan/visdial-fga-preprocessed
 metrics:
   - recall
   - mrr
@@ -107,7 +107,7 @@ mildly stochastic even under `model.eval()`.
 ```python
 from fga import FGAForVisualDialog
 
-model = FGAForVisualDialog.from_pretrained("idansc/fga")
+model = FGAForVisualDialog.from_pretrained("Idan/fga")
 
 outputs = model(
     question_input_ids=...,          # (batch, 21)
@@ -143,7 +143,7 @@ attention = Atten.from_utilities([
 
 ## Data
 
-Preprocessed dialogs: [`idansc/visdial-fga-preprocessed`](https://huggingface.co/datasets/idansc/visdial-fga-preprocessed).
+Preprocessed dialogs: [`Idan/visdial-fga-preprocessed`](https://huggingface.co/datasets/Idan/visdial-fga-preprocessed).
 
 Image features are not distributed with the model — it expects an h5 with
 `{split}_features` of shape `(num_images, 37, 2048)`. See the original paper for

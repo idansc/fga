@@ -216,7 +216,7 @@ python scripts/convert_legacy_checkpoint.py \
 
 The converter strips `DataParallel` prefixes, renames the parameters to the
 current module layout, and writes `config.json` + `model.safetensors`. Pass
-`--push_to_hub <user>/fga` to publish. `tests/test_equivalence.py` checks that a
+`--push_to_hub Idan/fga` to publish. `tests/test_equivalence.py` checks that a
 converted checkpoint reproduces the original model's scores exactly.
 
 ## Results
@@ -252,7 +252,7 @@ climbing after MRR has turned over, which is the metric tension the
 [2020 challenge submission](https://github.com/idansc/mrr-ndcg) dealt with — checkpoints
 are saved every epoch so you can select per metric.
 
-Weights for the epoch-5 checkpoint: [idansc/fga](https://huggingface.co/idansc/fga).
+Weights for the epoch-5 checkpoint: [Idan/fga](https://huggingface.co/Idan/fga).
 
 Note, the paper results may slightly vary from the results of this repo, since it is a refactored version.
 For the legacy version, please contact via email.
