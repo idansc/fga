@@ -54,7 +54,7 @@ def test_shared_utility_without_connections_is_rejected():
         Utility("history", dim=6, size=21, repeats=9)
 
 
-def test_connections_between_two_shared_utilities_are_rejected():
+def test_connections_between_two_shared_modalities_are_rejected():
     with pytest.raises(ValueError, match="not supported"):
         Atten.from_utilities(
             [
@@ -80,35 +80,52 @@ def test_duplicate_utility_names_are_rejected():
         Atten.from_utilities([Utility("a", dim=4, size=5), Utility("a", dim=4, size=5)])
 
 
-def test_config_accepts_the_readable_shared_form():
+def test_config_accepts_the_readable_share_weights_form():
+    """Named groups, spelled the way the attention layer's share_weights is."""
     config = FGAConfig(
-        shared_utilities=[
-            {"name": "history_question", "repeats": 9, "connected_to": ["answer", "question"]},
-            {"name": "history_answer", "repeats": 9, "connected_to": ["answer", "question"]},
+        share_weights=[
+            {
+                "modalities": [f"history_question_{i}" for i in range(1, 10)],
+                "connected_to": ["answer", "question"],
+            },
+            {
+                "modalities": [f"history_answer_{i}" for i in range(1, 10)],
+                "connected_to": ["answer", "question"],
+            },
         ]
     )
     assert config.sharing_factor_weights == {4: (9, [0, 1]), 5: (9, [0, 1])}
 
 
-def test_config_renders_shared_utilities_by_name():
-    config = FGAConfig()
-    assert config.shared_utilities == [
-        {"name": "history_question", "repeats": 9, "connected_to": ["answer", "question"]},
-        {"name": "history_answer", "repeats": 9, "connected_to": ["answer", "question"]},
-    ]
+def test_config_renders_share_weights_as_named_groups():
+    """Each repeated modality expands into its individual copies."""
+    groups = FGAConfig().share_weights
+    assert [g["modalities"][0] for g in groups] == ["history_question_1", "history_answer_1"]
+    assert all(len(g["modalities"]) == 9 for g in groups)
+    assert all(g["connected_to"] == ["answer", "question"] for g in groups)
+
+
+def test_config_share_weights_round_trips():
+    original = FGAConfig()
+    assert FGAConfig(share_weights=original.share_weights).sharing_factor_weights == original.sharing_factor_weights
+
+
+def test_config_rejects_a_share_group_spanning_two_modalities():
+    with pytest.raises(ValueError, match="must cover one modality"):
+        FGAConfig(share_weights=[{"modalities": ["history_question_1", "history_answer_2"]}])
 
 
 def test_config_rejects_both_spellings_at_once():
     with pytest.raises(ValueError, match="not both"):
         FGAConfig(
             sharing_factor_weights={4: (9, [0, 1])},
-            shared_utilities=[{"name": "history_answer", "repeats": 9, "connected_to": ["answer"]}],
+            share_weights=[{"modalities": ["history_answer_1", "history_answer_2"]}],
         )
 
 
 def test_config_rejects_an_unknown_utility_name():
     with pytest.raises(ValueError, match="Unknown modality"):
-        FGAConfig(shared_utilities=[{"name": "nonsense", "repeats": 2, "connected_to": ["answer"]}])
+        FGAConfig(share_weights=[{"modalities": ["nonsense_1", "nonsense_2"]}])
 
 
 def test_named_utilities_run_a_forward_pass():

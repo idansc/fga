@@ -4,11 +4,17 @@ A PyTorch port of https://github.com/idansc/HighOrderAtten — "High-Order Atten
 Models for Visual Question Answering" (NeurIPS 2017) — rebuilt on
 [`fga.attention`].
 
-Three modalities are attended jointly: question words, image regions and
-multiple-choice answers. The distinguishing piece is the **ternary** factor, which
-scores (region, word, answer) triples directly. A triple can be jointly consistent
-while no two of its parts stand out on their own, so pairwise factors cannot
-express it.
+Two settings are provided:
+
+* [`HighOrderAttentionForVQA`] — **multiple choice**. Three modalities: question
+  words, image regions and the candidate answers. Because there are three, it can
+  use a **ternary** factor scoring (region, word, answer) triples directly; a
+  triple can be jointly consistent while no two of its parts stand out on their
+  own, which pairwise factors cannot express.
+* [`OpenEndedVQAModel`] — **open ended**. No candidates are given, so the model
+  attends question and image only and classifies over the answer vocabulary.
+  With two modalities there is no ternary factor to apply, and the answer can no
+  longer steer where the model looks.
 """
 
 from .modeling_hoa import (
@@ -18,14 +24,24 @@ from .modeling_hoa import (
     HighOrderAttentionOutput,
     QuestionEncoder,
 )
+from .modeling_open_ended import (
+    OPEN_ENDED_MODALITIES,
+    OpenEndedVQAConfig,
+    OpenEndedVQAModel,
+    OpenEndedVQAOutput,
+)
 from .pooling import CompactBilinearPooling, count_sketch, signed_sqrt
 
 __all__ = [
     "MODALITY_NAMES",
+    "OPEN_ENDED_MODALITIES",
     "CompactBilinearPooling",
     "HighOrderAttentionConfig",
     "HighOrderAttentionForVQA",
     "HighOrderAttentionOutput",
+    "OpenEndedVQAConfig",
+    "OpenEndedVQAModel",
+    "OpenEndedVQAOutput",
     "QuestionEncoder",
     "count_sketch",
     "signed_sqrt",

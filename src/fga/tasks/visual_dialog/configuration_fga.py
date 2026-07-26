@@ -60,20 +60,25 @@ class FGAConfig(PretrainedConfig):
             Defaults to `{4: (9, [0, 1]), 5: (9, [0, 1])}`.
 
             This index form is the serialized one. To write it readably, pass
-            `shared_utilities` instead:
+            `share_weights` instead.
+        share_weights (`List[Dict]`, *optional*):
+            Readable alternative to `sharing_factor_weights`, naming the
+            modalities that share one set of factor weights, in the same spelling
+            the attention layer uses:
 
             ```python
-            FGAConfig(shared_modalities=[
-                {"name": "history_question", "repeats": 9, "connected_to": ["answer", "question"]},
-                {"name": "history_answer",   "repeats": 9, "connected_to": ["answer", "question"]},
+            FGAConfig(share_weights=[
+                {"modalities": [f"history_question_{i}" for i in range(1, 10)],
+                 "connected_to": ["answer", "question"]},
+                {"modalities": [f"history_answer_{i}" for i in range(1, 10)],
+                 "connected_to": ["answer", "question"]},
             ])
             ```
 
-            and read it back with the `shared_modalities` property.
-        shared_modalities (`List[Dict]`, *optional*):
-            Readable alternative to `sharing_factor_weights`, using the names in
-            [`FGAConfig.MODALITY_NAMES`]. Normalized into `sharing_factor_weights`
-            on construction; passing both is an error. Alias: `shared_utilities`.
+            The connections live on the group rather than on each member, since
+            members sharing weights must agree on them. Normalized into
+            `sharing_factor_weights` on construction; passing both is an error.
+            Read it back with the `share_weights` property.
         use_prior (`bool`, *optional*, defaults to `True`):
             Add the length/uniform prior potential.
         use_pairwise (`bool`, *optional*, defaults to `True`):
@@ -118,8 +123,7 @@ class FGAConfig(PretrainedConfig):
         num_history_rounds: int = 9,
         utility_sizes: Optional[Sequence[int]] = None,
         sharing_factor_weights: Optional[Dict[int, Tuple[int, List[int]]]] = None,
-        shared_modalities: Optional[List[Dict[str, Any]]] = None,
-        shared_utilities: Optional[List[Dict[str, Any]]] = None,
+        share_weights: Optional[List[Dict[str, Any]]] = None,
         use_prior: bool = True,
         use_pairwise: bool = True,
         use_unary: bool = True,
@@ -144,13 +148,10 @@ class FGAConfig(PretrainedConfig):
         self.num_options = num_options
         self.num_history_rounds = num_history_rounds
         self.utility_sizes = list(utility_sizes) if utility_sizes is not None else [100, 21, 41, 37, 21, 21]
-        shared_modalities = shared_modalities if shared_modalities is not None else shared_utilities
-        if shared_modalities is not None:
+        if share_weights is not None:
             if sharing_factor_weights is not None:
-                raise ValueError(
-                    "Pass either shared_modalities (readable) or sharing_factor_weights (indexed), not both."
-                )
-            sharing_factor_weights = self._shared_modalities_to_indices(shared_modalities)
+                raise ValueError("Pass either share_weights (readable) or sharing_factor_weights (indexed), not both.")
+            sharing_factor_weights = self._share_weights_to_indices(share_weights)
 
         # json round-trips dict keys as strings; normalize back to int.
         if sharing_factor_weights is None:
@@ -179,9 +180,8 @@ class FGAConfig(PretrainedConfig):
     UTILITY_NAMES = MODALITY_NAMES
 
     @classmethod
-    def _shared_modalities_to_indices(
-        cls, shared_modalities: List[Dict[str, Any]]
-    ) -> Dict[int, Tuple[int, List[int]]]:
+    def _share_weights_to_indices(cls, share_weights: List[Dict[str, Any]]) -> Dict[int, Tuple[int, List[int]]]:
+        """Collapse named groups back into the indexed form that is serialized."""
         index_of = {name: i for i, name in enumerate(cls.MODALITY_NAMES)}
 
         def resolve(name: str) -> int:
@@ -189,27 +189,42 @@ class FGAConfig(PretrainedConfig):
                 raise ValueError(f"Unknown modality {name!r}; expected one of {list(cls.MODALITY_NAMES)}.")
             return index_of[name]
 
-        return {
-            resolve(entry["name"]): (int(entry["repeats"]), [resolve(n) for n in entry["connected_to"]])
-            for entry in shared_modalities
-        }
+        sharing: Dict[int, Tuple[int, List[int]]] = {}
+        for group in share_weights:
+            members = list(group["modalities"])
+            if len(members) < 2:
+                raise ValueError(f"A share_weights group needs at least two modalities; got {members}.")
+
+            # Members are the repeats of one canonical modality: history_question_3
+            # belongs to history_question.
+            bases = {cls._base_name(name) for name in members}
+            if len(bases) != 1:
+                raise ValueError(f"A share_weights group must cover one modality; {members} spans {sorted(bases)}.")
+
+            base = bases.pop()
+            sharing[resolve(base)] = (len(members), [resolve(n) for n in group.get("connected_to", ())])
+        return sharing
+
+    @staticmethod
+    def _base_name(name: str) -> str:
+        """`history_question_3` -> `history_question`."""
+        head, _, tail = name.rpartition("_")
+        return head if head and tail.isdigit() else name
 
     @property
-    def shared_modalities(self) -> List[Dict[str, Any]]:
-        """`sharing_factor_weights` rendered with modality names instead of indices."""
+    def share_weights(self) -> List[Dict[str, Any]]:
+        """`sharing_factor_weights` rendered as named groups.
+
+        Each repeated modality is expanded into its individual copies, so this
+        reads the way the attention layer's `share_weights` argument is written.
+        """
         return [
             {
-                "name": self.MODALITY_NAMES[index],
-                "repeats": repeats,
+                "modalities": [f"{self.MODALITY_NAMES[index]}_{r + 1}" for r in range(repeats)],
                 "connected_to": [self.MODALITY_NAMES[i] for i in connected],
             }
             for index, (repeats, connected) in sorted(self.sharing_factor_weights.items())
         ]
-
-    @property
-    def shared_utilities(self) -> List[Dict[str, Any]]:
-        """The paper's name for [`shared_modalities`]."""
-        return self.shared_modalities
 
     @property
     def modality_dims(self) -> List[int]:

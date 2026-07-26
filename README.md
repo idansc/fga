@@ -146,6 +146,23 @@ FactorGraphAttention(
 Each member then merges one extra potential. Set `use_ternary=False` for the
 pairwise-only ablation the paper reports.
 
+For **open-ended** VQA — no candidate answers, classify over the answer
+vocabulary — use `OpenEndedVQAModel`:
+
+```python
+from fga.tasks.vqa import OpenEndedVQAConfig, OpenEndedVQAModel
+
+model = OpenEndedVQAModel(OpenEndedVQAConfig())
+out = model(question_input_ids=question, image_features=regions, labels=answers)
+```
+
+That leaves two modalities, so there is no ternary factor to apply — and the
+answer can no longer steer where the model looks, which in multiple choice is
+much of what the third modality buys. Set `soft_targets=True` to train against
+the ten human answers as a distribution rather than one label, since VQA accuracy
+credits any answer given by at least three annotators and is graded in the same
+way the dense relevance is for Visual Dialog.
+
 Two notes on the port. The potentials follow **FGA's** conventions — L2-normalized
 embeddings, a batch-normalized interaction grid, convolutional marginalization —
 rather than the original's `tanh` and learned elementwise scaling. And the
@@ -166,7 +183,7 @@ The published follow-up models are ported onto the same layer, one package each:
 | package | task | modalities | output |
 | --- | --- | --- | --- |
 | `visual_dialog` | rank answers about an image | answers, question, caption, image, 2×history | ranking |
-| `vqa` | multiple-choice VQA | question, image, answers | classification |
+| `vqa` | VQA, multiple-choice **or** open-ended | question, image, (answers) | classification |
 | `video_dialog` | [audio-visual scene-aware dialog](https://github.com/idansc/simple-avsd) | question, 4 video streams, audio | decoder state |
 | `video_retrieval` | [text-to-video retrieval](https://github.com/AmeenAli/VideoMatch) | clips, query words | contrastive score |
 | `navigation` | [target-driven navigation](https://github.com/barmayo/spatial_attention) | target object, observation grid | policy + value |
@@ -200,18 +217,21 @@ The naming used by those forks is accepted as-is, so this package is a drop-in:
 for `Modality`, and the AVSD spelling `high_order_utils=[(idx, repeats, connected)]`
 with `size_flag` for `sharing_factor_weights`.
 
-`FGAConfig` takes the same readable form:
+`FGAConfig` takes the same form:
 
 ```python
-FGAConfig(shared_modalities=[
-    {"name": "history_question", "repeats": 9, "connected_to": ["answer", "question"]},
-    {"name": "history_answer",   "repeats": 9, "connected_to": ["answer", "question"]},
+FGAConfig(share_weights=[
+    {"modalities": [f"history_question_{i}" for i in range(1, 10)],
+     "connected_to": ["answer", "question"]},
+    {"modalities": [f"history_answer_{i}" for i in range(1, 10)],
+     "connected_to": ["answer", "question"]},
 ])
 ```
 
-The indexed `sharing_factor_weights` stays the serialized field, so old configs
-and published checkpoints keep loading, and `config.shared_modalities` renders it
-by name.
+The connections sit on the group rather than on each member, since modalities
+sharing weights must agree on them. The indexed `sharing_factor_weights` remains
+the serialized field, so published checkpoints keep loading, and
+`config.share_weights` renders it back as named groups.
 
 ## Data
 

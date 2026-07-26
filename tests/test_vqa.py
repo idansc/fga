@@ -216,3 +216,91 @@ def test_save_and_from_pretrained_round_trip(tiny_config, tiny_batch, tmp_path):
     with torch.no_grad():
         after = reloaded(**tiny_batch).logits
     torch.testing.assert_close(before, after)
+
+
+# --- open-ended VQA ---
+
+
+@pytest.fixture
+def open_ended_config():
+    from fga.tasks.vqa import OpenEndedVQAConfig
+
+    return OpenEndedVQAConfig(
+        vocab_size=200,
+        num_answers=50,
+        hidden_size=32,
+        word_embed_dim=32,
+        image_feature_dim=64,
+        num_regions=12,
+        max_question_length=7,
+        pooling_dim=128,
+    )
+
+
+def open_ended_batch(config, batch=3):
+    torch.manual_seed(0)
+    return {
+        "question_input_ids": torch.randint(1, config.vocab_size, (batch, config.max_question_length)),
+        "image_features": torch.randn(batch, config.num_regions, config.image_feature_dim),
+    }
+
+
+def test_open_ended_classifies_the_answer_vocabulary(open_ended_config):
+    from fga.tasks.vqa import OpenEndedVQAModel
+
+    model = OpenEndedVQAModel(open_ended_config).eval()
+    with torch.no_grad():
+        out = model(**open_ended_batch(open_ended_config), labels=torch.randint(0, 50, (3,)))
+    assert out.logits.shape == (3, open_ended_config.num_answers)
+    assert torch.isfinite(out.loss)
+
+
+def test_open_ended_has_no_ternary_factor(open_ended_config):
+    """Two modalities, so there is nothing for a three-way factor to act on."""
+    from fga.tasks.vqa import OpenEndedVQAModel
+
+    model = OpenEndedVQAModel(open_ended_config)
+    assert model.attention.n_modalities == 2
+    assert not model.attention.ternary_interactions
+
+
+def test_open_ended_attends_words_and_regions(open_ended_config):
+    from fga.tasks.vqa import OpenEndedVQAModel
+
+    model = OpenEndedVQAModel(open_ended_config).eval()
+    with torch.no_grad():
+        out = model(**open_ended_batch(open_ended_config), output_attentions=True)
+    assert [tuple(a.shape) for a in out.attentions] == [
+        (3, open_ended_config.max_question_length),
+        (3, open_ended_config.num_regions),
+    ]
+
+
+def test_open_ended_soft_targets_match_graded_answers(open_ended_config):
+    """VQA credits an answer given by 3 of 10 annotators, so the label is graded."""
+    from fga.tasks.vqa import OpenEndedVQAModel
+
+    open_ended_config.soft_targets = True
+    model = OpenEndedVQAModel(open_ended_config).eval()
+
+    scores = torch.zeros(3, open_ended_config.num_answers)
+    scores[:, 1] = 1.0
+    scores[:, 2] = 0.6  # a second acceptable answer
+
+    with torch.no_grad():
+        soft = model(**open_ended_batch(open_ended_config), answer_scores=scores).loss
+        hard = model(**open_ended_batch(open_ended_config), labels=torch.ones(3, dtype=torch.long)).loss
+    assert torch.isfinite(soft) and not torch.isclose(soft, hard)
+
+
+def test_open_ended_round_trips(open_ended_config, tmp_path):
+    from fga.tasks.vqa import OpenEndedVQAModel
+
+    model = OpenEndedVQAModel(open_ended_config).eval()
+    batch = open_ended_batch(open_ended_config)
+    with torch.no_grad():
+        before = model(**batch).logits
+    model.save_pretrained(tmp_path)
+    with torch.no_grad():
+        after = OpenEndedVQAModel.from_pretrained(tmp_path).eval()(**batch).logits
+    torch.testing.assert_close(before, after)
