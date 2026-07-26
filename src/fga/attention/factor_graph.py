@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .modality import Modality, ModalityPlan, plan_modalities
-from .potentials import Pairwise, Unary, conv1x1, pair_key, self_key
+from .potentials import Pairwise, Ternary, Unary, conv1x1, pair_key, self_key, tri_key
 
 __all__ = ["FactorGraphAttention", "Atten", "NaiveAttention"]
 
@@ -76,8 +76,6 @@ class FactorGraphAttention(nn.Module):
         use_unary: use local information. Alias: `unary_flag`.
         use_self: use interactions among entities of the same modality. Alias: `self_flag`.
         unary_dropout: dropout inside the unary potential.
-        legacy_unary_dropout: keep unary dropout active at evaluation time,
-            reproducing the original release.
         modality_names: optional labels, set for you by [`FactorGraphAttention.from_modalities`].
     """
 
@@ -92,8 +90,8 @@ class FactorGraphAttention(nn.Module):
         use_unary: bool = True,
         use_self: bool = True,
         unary_dropout: float = 0.5,
-        legacy_unary_dropout: bool = False,
         modality_names: Optional[Sequence[str]] = None,
+        ternary_interactions: Optional[Sequence[Sequence[int]]] = None,
         *,
         util_e: Optional[Sequence[int]] = None,
         sizes: Optional[Sequence[Optional[int]]] = None,
@@ -141,7 +139,7 @@ class FactorGraphAttention(nn.Module):
         if len(self.modality_names) != self.n_modalities:
             raise ValueError(f"Got {len(self.modality_names)} modality_names for {self.n_modalities} modalities.")
 
-        # Set by `from_modalities` when modalities are tied into shared-weight
+        # Set by `from_modalities` when modalities are grouped into shared-weight
         # groups; `None` means the caller passes one tensor per internal entry.
         self._plan: Optional[ModalityPlan] = None
 
@@ -160,7 +158,7 @@ class FactorGraphAttention(nn.Module):
         self.sharing_factor_weights = dict(sharing_factor_weights or {})
 
         for idx, e_dim in enumerate(util_e):
-            self.un_models.append(Unary(e_dim, unary_dropout, legacy_unary_dropout))
+            self.un_models.append(Unary(e_dim, unary_dropout))
             if self.size_force:
                 self.spatial_pool[str(idx)] = nn.AdaptiveAvgPool1d(sizes[idx])
 
@@ -195,6 +193,35 @@ class FactorGraphAttention(nn.Module):
                 if k not in self.sharing_factor_weights:
                     self.num_of_potentials[k] += (self.n_modalities - 1) - len(self.sharing_factor_weights)
 
+        # Three-way factors, from High-Order Attention. Each triple contributes one
+        # extra potential to each of its three modalities.
+        self.ternary_interactions = [tuple(sorted(t)) for t in (ternary_interactions or [])]
+        self.tri_models = nn.ModuleDict()
+        for triple in self.ternary_interactions:
+            if len(set(triple)) != 3:
+                raise ValueError(f"A ternary interaction needs three distinct modalities; got {triple}.")
+            if any(i in self.sharing_factor_weights for i in triple):
+                raise ValueError(
+                    f"Ternary interaction {triple} includes a weight-sharing modality, which is not supported."
+                )
+            missing = [i for i in triple if sizes[i] is None]
+            if missing:
+                raise ValueError(
+                    f"Ternary interaction {triple} needs num_entities for every member; missing for {missing}."
+                )
+            i, j, k = triple
+            self.tri_models[tri_key(i, j, k)] = Ternary(
+                embed_size=max(util_e[i], util_e[j], util_e[k]),
+                x_size=sizes[i],
+                y_size=sizes[j],
+                z_size=sizes[k],
+                dim_x=util_e[i],
+                dim_y=util_e[j],
+                dim_z=util_e[k],
+            )
+            for index in triple:
+                self.num_of_potentials[index] += 1
+
         self.reduce_potentials = nn.ModuleList(
             [nn.Conv1d(self.num_of_potentials[idx], 1, 1, bias=False) for idx in range(self.n_modalities)]
         )
@@ -203,7 +230,7 @@ class FactorGraphAttention(nn.Module):
     def from_modalities(
         cls,
         modalities: Sequence[Modality],
-        tied_weights: Optional[Sequence[Sequence[str]]] = None,
+        share_weights: Optional[Sequence[Sequence[str]]] = None,
         **kwargs,
     ) -> "FactorGraphAttention":
         """Build from named [`Modality`] specs instead of parallel index-aligned lists.
@@ -222,7 +249,7 @@ class FactorGraphAttention(nn.Module):
 
         Any remaining keyword arguments go to [`FactorGraphAttention`].
         """
-        plan = plan_modalities(modalities, tied_weights)
+        plan = plan_modalities(modalities, share_weights)
         module = cls(
             embed_dims=list(plan.embed_dims),
             num_entities=list(plan.num_entities),
@@ -264,7 +291,8 @@ class FactorGraphAttention(nn.Module):
                     ("prior", self.use_prior),
                 )
                 if on
-            ),
+            )
+            + ("+ternary" if self.ternary_interactions else ""),
         ]
         if self.sharing_factor_weights:
             shared = ", ".join(
@@ -318,7 +346,7 @@ class FactorGraphAttention(nn.Module):
 
         plan = self._plan
         if plan is not None and not plan.is_trivial and len(modalities) == len(plan.names):
-            # The caller passes one tensor per *modality*; tied modalities share a
+            # The caller passes one tensor per *modality*; modalities sharing weights use a
             # single set of weights, so their tensors are merged into one entry.
             # The shared factors index rows as batch-major, repeat-minor -- the same
             # order `expand(batch, repeats, ...).view(batch * repeats, ...)` produces --
@@ -346,7 +374,7 @@ class FactorGraphAttention(nn.Module):
             result = self._attend(modalities, priors, return_weights)
             attention, weights = result if return_weights else (result, None)
 
-            # Split the tied entries back out, in the caller's modality order.
+            # Split the shared entries back out, in the caller's modality order.
             per_modality: List[Optional[torch.Tensor]] = [None] * len(plan.names)
             per_modality_weights: List[Optional[torch.Tensor]] = [None] * len(plan.names)
             for entry, group in enumerate(plan.groups):
@@ -370,7 +398,7 @@ class FactorGraphAttention(nn.Module):
         return self._attend(modalities, priors, return_weights)
 
     def _attend(self, modalities, priors, return_weights: bool):
-        """Attend over one tensor per internal entry, tied groups already merged."""
+        """Attend over one tensor per internal entry, shared groups already merged."""
         if self.n_modalities != len(modalities):
             raise ValueError(
                 f"{type(self).__name__} was built for {self.n_modalities} utilities "
@@ -445,6 +473,13 @@ class FactorGraphAttention(nn.Module):
                 factor_ij, factor_ji = self.pp_models[pair_key(i, j)](modalities[i], modalities[j])
                 util_factors.setdefault(i, []).append(factor_ij)
                 util_factors.setdefault(j, []).append(factor_ji)
+
+        # Three-way factors.
+        for triple in self.ternary_interactions:
+            i, j, k = triple
+            potentials = self.tri_models[tri_key(i, j, k)](modalities[i], modalities[j], modalities[k])
+            for index, potential in zip(triple, potentials):
+                util_factors.setdefault(index, []).append(potential)
 
         for i in range(self.n_modalities):
             if self.use_prior:

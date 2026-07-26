@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__all__ = ["Unary", "Pairwise", "conv1x1", "self_key", "pair_key"]
+__all__ = ["Unary", "Pairwise", "Ternary", "conv1x1", "self_key", "pair_key", "tri_key"]
 
 
 def conv1x1(x: torch.Tensor, conv: nn.Conv1d) -> torch.Tensor:
@@ -45,23 +45,24 @@ def pair_key(idx1: int, idx2: int) -> str:
     return f"{idx1}_{idx2}"
 
 
+def tri_key(idx1: int, idx2: int, idx3: int) -> str:
+    """ModuleDict key for the factor among three distinct modalities."""
+    return f"tri_{idx1}_{idx2}_{idx3}"
+
+
 class Unary(nn.Module):
     """Local potential: scores each entity of a modality on its own.
 
     Args:
         embed_size: embedding dimension of the modality.
         dropout: dropout probability applied to the hidden activation.
-        legacy_dropout: if `True`, keep dropping activations at evaluation time,
-            reproducing the behaviour of the original release (which called
-            `F.dropout` without forwarding `self.training`).
     """
 
-    def __init__(self, embed_size: int, dropout: float = 0.5, legacy_dropout: bool = False):
+    def __init__(self, embed_size: int, dropout: float = 0.5):
         super().__init__()
         self.embed = nn.Conv1d(embed_size, embed_size, 1)
         self.feature_reduce = nn.Conv1d(embed_size, 1, 1)
         self.dropout = dropout
-        self.legacy_dropout = legacy_dropout
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         """Args: X of shape `(batch, num_entities, embed_size)`.
@@ -70,11 +71,7 @@ class Unary(nn.Module):
         """
         X = X.transpose(1, 2)
         X_embed = conv1x1(X, self.embed)
-        X_nl_embed = F.dropout(
-            F.relu(X_embed),
-            p=self.dropout,
-            training=True if self.legacy_dropout else self.training,
-        )
+        X_nl_embed = F.dropout(F.relu(X_embed), p=self.dropout, training=self.training)
         X_poten = conv1x1(X_nl_embed, self.feature_reduce)
         return X_poten.squeeze(1)
 
@@ -156,3 +153,91 @@ class Pairwise(nn.Module):
             Y_poten = S.mean(dim=1, keepdim=False)
 
         return X_poten, Y_poten
+
+
+class Ternary(nn.Module):
+    """Three-way interaction potential, from High-Order Attention (NeurIPS 2017).
+
+    Pairwise factors can only say "this region matches that word". A ternary
+    factor scores triples directly -- "this region, this word *and* this candidate
+    answer agree" -- which pairwise terms cannot express, since a triple can be
+    jointly consistent while no two of its parts stand out alone.
+
+    The three modalities are projected to a shared space, L2-normalized, and
+    correlated into
+
+        T[b, x, y, z] = sum_d  X[b, x, d] * Y[b, y, d] * Z[b, z, d]
+
+    which is batch-normalized over the flattened grid and then marginalized down
+    to one potential per modality: the potential for `X` collapses the `(y, z)`
+    axes, and so on.
+
+    This follows [`Pairwise`]'s conventions rather than the original Lua
+    implementation's, so that a factor graph can mix the two: normalized
+    embeddings and a batch-normalized grid instead of a learned elementwise
+    scale, convolutional marginalization, and no `tanh` on the output -- the
+    potentials are combined by a learned reduction before the softmax, so
+    squashing them here only discards range.
+
+    Args:
+        embed_size: shared projection dimension.
+        x_size / y_size / z_size: entity counts, needed for the batch norm and the
+            learned marginalizations.
+        dim_x / dim_y / dim_z: input dimensions, when they differ from `embed_size`.
+
+    Shape:
+        - Input: `(batch, x_size, dim_x)`, `(batch, y_size, dim_y)`, `(batch, z_size, dim_z)`
+        - Output: `(batch, x_size)`, `(batch, y_size)`, `(batch, z_size)`
+
+    The interaction tensor holds `x_size * y_size * z_size` values per example, so
+    it grows fast: the VQA configuration (196 regions, 15 words, 18 answers) is
+    ~53k floats each, which is affordable, but a fourth modality would not be.
+    """
+
+    def __init__(
+        self,
+        embed_size: int,
+        x_size: int,
+        y_size: int,
+        z_size: int,
+        dim_x: Optional[int] = None,
+        dim_y: Optional[int] = None,
+        dim_z: Optional[int] = None,
+    ):
+        super().__init__()
+        self.embed_size = embed_size
+        self.sizes = (x_size, y_size, z_size)
+
+        self.embed_X = nn.Conv1d(dim_x or embed_size, embed_size, 1)
+        self.embed_Y = nn.Conv1d(dim_y or embed_size, embed_size, 1)
+        self.embed_Z = nn.Conv1d(dim_z or embed_size, embed_size, 1)
+
+        self.normalize_T = nn.BatchNorm1d(x_size * y_size * z_size)
+
+        self.margin_X = nn.Conv1d(y_size * z_size, 1, 1)
+        self.margin_Y = nn.Conv1d(x_size * z_size, 1, 1)
+        self.margin_Z = nn.Conv1d(x_size * y_size, 1, 1)
+
+    def forward(self, X: torch.Tensor, Y: torch.Tensor, Z: torch.Tensor):
+        """Returns one potential per modality: `(X_poten, Y_poten, Z_poten)`."""
+        # (batch, embed, entities), matching Pairwise's layout.
+        x = F.normalize(conv1x1(X.transpose(1, 2), self.embed_X), dim=1)
+        y = F.normalize(conv1x1(Y.transpose(1, 2), self.embed_Y), dim=1)
+        z = F.normalize(conv1x1(Z.transpose(1, 2), self.embed_Z), dim=1)
+
+        # One fused contraction rather than per-slice outer products.
+        interaction = torch.einsum("bdx,bdy,bdz->bxyz", x, y, z)
+
+        batch = interaction.size(0)
+        nx, ny, nz = self.sizes
+        interaction = self.normalize_T(interaction.reshape(batch, nx * ny * nz)).view(batch, nx, ny, nz)
+
+        def marginalize(grid: torch.Tensor, conv: nn.Conv1d, keep: int) -> torch.Tensor:
+            # (batch, keep, rest) -> (batch, rest, keep) -> conv over `rest` -> (batch, keep)
+            return conv1x1(grid.reshape(batch, keep, -1).transpose(1, 2), conv).squeeze(1)
+
+        return (
+            marginalize(interaction, self.margin_X, nx),
+            marginalize(interaction.permute(0, 2, 1, 3), self.margin_Y, ny),
+            marginalize(interaction.permute(0, 3, 1, 2), self.margin_Z, nz),
+        )

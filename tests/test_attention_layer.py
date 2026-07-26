@@ -160,7 +160,7 @@ def test_the_layer_does_not_import_the_task_package():
 # --- explicit modalities with separately declared weight sharing ---
 
 
-def _tied_pair(batch=3, repeats=4):
+def _shared_pair(batch=3, repeats=4):
     """The same graph expressed both ways, sharing one set of weights."""
     torch.manual_seed(0)
     compact = FactorGraphAttention.from_modalities(
@@ -174,16 +174,16 @@ def _tied_pair(batch=3, repeats=4):
     explicit = FactorGraphAttention.from_modalities(
         [Modality("answer", dim=8, size=10), Modality("question", dim=8, size=6)]
         + [Modality(f"history_{i}", dim=4, size=5, connected_to=("answer", "question")) for i in range(repeats)],
-        tied_weights=[[f"history_{i}" for i in range(repeats)]],
+        share_weights=[[f"history_{i}" for i in range(repeats)]],
     ).eval()
     explicit.load_state_dict(compact.state_dict())
     return compact, explicit
 
 
-def test_tied_modalities_match_the_repeats_form_exactly():
+def test_shared_weights_match_the_repeats_form_exactly():
     """The explicit spelling must be the same model, not merely a similar one."""
     batch, repeats = 3, 4
-    compact, explicit = _tied_pair(batch, repeats)
+    compact, explicit = _shared_pair(batch, repeats)
 
     answer = torch.randn(batch, 10, 8)
     question = torch.randn(batch, 6, 8)
@@ -200,20 +200,20 @@ def test_tied_modalities_match_the_repeats_form_exactly():
         torch.testing.assert_close(per_round[:, i], split[2 + i])
 
 
-def test_tied_modalities_share_one_set_of_weights():
-    compact, explicit = _tied_pair()
+def test_share_weights_uses_one_set_of_weights():
+    compact, explicit = _shared_pair()
     assert sum(p.numel() for p in explicit.parameters()) == sum(p.numel() for p in compact.parameters())
 
 
-def test_each_tied_modality_is_returned_separately():
-    _, explicit = _tied_pair(batch=3, repeats=4)
+def test_each_shared_modality_is_returned_separately():
+    _, explicit = _shared_pair(batch=3, repeats=4)
     outputs = explicit(torch.randn(3, 10, 8), torch.randn(3, 6, 8), *[torch.randn(3, 5, 4) for _ in range(4)])
     assert len(outputs) == 6
     assert [tuple(o.shape) for o in outputs[2:]] == [(3, 4)] * 4
 
 
-def test_tied_weights_returns_per_modality_attention():
-    _, explicit = _tied_pair(batch=2, repeats=4)
+def test_share_weights_returns_per_modality_attention():
+    _, explicit = _shared_pair(batch=2, repeats=4)
     _, weights = explicit(
         torch.randn(2, 10, 8),
         torch.randn(2, 6, 8),
@@ -226,7 +226,7 @@ def test_tied_weights_returns_per_modality_attention():
         torch.testing.assert_close(w.sum(-1), torch.ones(w.size(0)))
 
 
-def test_tied_modalities_must_agree_on_shape():
+def test_shared_modalities_must_agree_on_shape():
     with pytest.raises(ValueError, match="match in shape"):
         FactorGraphAttention.from_modalities(
             [
@@ -234,12 +234,12 @@ def test_tied_modalities_must_agree_on_shape():
                 Modality("h1", dim=4, size=5, connected_to=("a",)),
                 Modality("h2", dim=6, size=5, connected_to=("a",)),
             ],
-            tied_weights=[["h1", "h2"]],
+            share_weights=[["h1", "h2"]],
         )
 
 
-def test_tied_modalities_must_agree_on_connections():
-    with pytest.raises(ValueError, match="share connections"):
+def test_shared_modalities_must_agree_on_connections():
+    with pytest.raises(ValueError, match="agree on connections"):
         FactorGraphAttention.from_modalities(
             [
                 Modality("a", dim=8, size=5),
@@ -247,12 +247,12 @@ def test_tied_modalities_must_agree_on_connections():
                 Modality("h1", dim=4, size=5, connected_to=("a",)),
                 Modality("h2", dim=4, size=5, connected_to=("b",)),
             ],
-            tied_weights=[["h1", "h2"]],
+            share_weights=[["h1", "h2"]],
         )
 
 
-def test_a_modality_cannot_be_in_two_tied_groups():
-    with pytest.raises(ValueError, match="more than one tied_weights group"):
+def test_a_modality_cannot_be_in_two_share_groups():
+    with pytest.raises(ValueError, match="more than one share_weights group"):
         FactorGraphAttention.from_modalities(
             [
                 Modality("a", dim=8, size=5),
@@ -260,13 +260,13 @@ def test_a_modality_cannot_be_in_two_tied_groups():
                 Modality("h2", dim=4, size=5, connected_to=("a",)),
                 Modality("h3", dim=4, size=5, connected_to=("a",)),
             ],
-            tied_weights=[["h1", "h2"], ["h1", "h3"]],
+            share_weights=[["h1", "h2"], ["h1", "h3"]],
         )
 
 
-def test_tied_weights_names_must_exist():
+def test_share_weights_names_must_exist():
     with pytest.raises(ValueError, match="unknown modality"):
         FactorGraphAttention.from_modalities(
             [Modality("a", dim=8, size=5), Modality("h1", dim=4, size=5, connected_to=("a",))],
-            tied_weights=[["h1", "typo"]],
+            share_weights=[["h1", "typo"]],
         )

@@ -172,7 +172,6 @@ class FGAModel(FGAPreTrainedModel):
             modality_names=MODALITY_NAMES,
             size_force=config.size_force,
             unary_dropout=config.unary_dropout,
-            legacy_unary_dropout=config.legacy_unary_dropout,
         )
 
         self.post_init()

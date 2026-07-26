@@ -65,10 +65,10 @@ class Modality:
                 f"Modality {self.name!r} has repeats={self.repeats} but no connected_to. "
                 "A shared modality must declare which utilities it interacts with."
             )
-        # `connected_to` on an untied, unrepeated modality is allowed and simply
+        # `connected_to` on an unshared, unrepeated modality is allowed and simply
         # redundant -- such a modality already interacts with everything. It only
         # constrains anything for a modality that shares weights, whether via
-        # `repeats` or via a `tied_weights` group.
+        # `repeats` or via a `share_weights` group.
 
 
 def modalities_to_index_args(
@@ -115,7 +115,7 @@ class ModalityPlan:
         embed_dims / num_entities / sharing_factor_weights: the positional form
             [`FactorGraphAttention`] is built from.
         groups: for each internal entry, the user-facing modality indices it
-            covers -- a single index for an untied modality, N for a tied group.
+            covers -- a single index for a modality that shares with nothing, N for a shared group.
         names: user-facing modality names, in the order they are passed.
     """
 
@@ -133,13 +133,13 @@ class ModalityPlan:
 
 def plan_modalities(
     modalities: Sequence[Modality],
-    tied_weights: Optional[Sequence[Sequence[str]]] = None,
+    share_weights: Optional[Sequence[Sequence[str]]] = None,
 ) -> ModalityPlan:
-    """Work out the internal layout for a list of modalities and their tied groups.
+    """Work out the internal layout for a list of modalities and their shared groups.
 
     Args:
         modalities: the modalities, in the order they will be passed to `forward`.
-        tied_weights: groups of modality names that share one set of factor
+        share_weights: groups of modality names that share one set of factor
             weights, e.g. `[("history_1", ..., "history_9")]`. Members must agree
             on dimension, entity count and connections, since they are literally
             the same weights.
@@ -157,28 +157,28 @@ def plan_modalities(
 
     groups: List[List[int]] = []
     grouped: Dict[str, int] = {}
-    for group in tied_weights or []:
+    for group in share_weights or []:
         members = list(group)
         if len(members) < 2:
-            raise ValueError(f"A tied_weights group needs at least two modalities; got {members}.")
+            raise ValueError(f"A share_weights group needs at least two modalities; got {members}.")
         for name in members:
             if name not in by_name:
-                raise ValueError(f"tied_weights names unknown modality {name!r}.")
+                raise ValueError(f"share_weights names unknown modality {name!r}.")
             if name in grouped:
-                raise ValueError(f"Modality {name!r} appears in more than one tied_weights group.")
+                raise ValueError(f"Modality {name!r} appears in more than one share_weights group.")
 
         first = by_name[members[0]]
         for name in members[1:]:
             other = by_name[name]
             if (other.dim, other.size) != (first.dim, first.size):
                 raise ValueError(
-                    f"Tied modalities must match in shape: {name!r} is "
+                    f"Modalities sharing weights must match in shape: {name!r} is "
                     f"(dim={other.dim}, size={other.size}) but {first.name!r} is "
                     f"(dim={first.dim}, size={first.size}). They share the same weights."
                 )
             if tuple(other.connected_to or ()) != tuple(first.connected_to or ()):
                 raise ValueError(
-                    f"Tied modalities must share connections: {name!r} connects to "
+                    f"Modalities sharing weights must agree on connections: {name!r} connects to "
                     f"{other.connected_to} but {first.name!r} connects to {first.connected_to}."
                 )
         group_id = len(groups)
@@ -198,7 +198,7 @@ def plan_modalities(
             entries.append(groups[group_id])
 
     entry_of_modality = {i: e for e, members in enumerate(entries) for i in members}
-    tied_names = set(grouped)
+    shared_names = set(grouped)
 
     sharing: Dict[int, Tuple[int, List[int]]] = {}
     for entry, members in enumerate(entries):
@@ -210,7 +210,7 @@ def plan_modalities(
         for neighbour in representative.connected_to or ():
             if neighbour not in index_of:
                 raise ValueError(f"Modality {representative.name!r} is connected to unknown modality {neighbour!r}.")
-            if neighbour in tied_names or by_name[neighbour].repeats > 1:
+            if neighbour in shared_names or by_name[neighbour].repeats > 1:
                 raise ValueError(
                     f"Modality {representative.name!r} is connected to {neighbour!r}, but both share "
                     "factor weights. Connections between two shared modalities are not supported."
