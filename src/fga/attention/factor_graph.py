@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .modality import Modality, ModalityPlan, plan_modalities
-from .potentials import Pairwise, Unary, conv1x1, pair_key, self_key
+from .potentials import Pairwise, Ternary, Unary, conv1x1, pair_key, self_key, tri_key
 
 __all__ = ["FactorGraphAttention", "Atten", "NaiveAttention"]
 
@@ -94,6 +94,7 @@ class FactorGraphAttention(nn.Module):
         unary_dropout: float = 0.5,
         legacy_unary_dropout: bool = False,
         modality_names: Optional[Sequence[str]] = None,
+        ternary_interactions: Optional[Sequence[Sequence[int]]] = None,
         *,
         util_e: Optional[Sequence[int]] = None,
         sizes: Optional[Sequence[Optional[int]]] = None,
@@ -195,6 +196,35 @@ class FactorGraphAttention(nn.Module):
                 if k not in self.sharing_factor_weights:
                     self.num_of_potentials[k] += (self.n_modalities - 1) - len(self.sharing_factor_weights)
 
+        # Three-way factors, from High-Order Attention. Each triple contributes one
+        # extra potential to each of its three modalities.
+        self.ternary_interactions = [tuple(sorted(t)) for t in (ternary_interactions or [])]
+        self.tri_models = nn.ModuleDict()
+        for triple in self.ternary_interactions:
+            if len(set(triple)) != 3:
+                raise ValueError(f"A ternary interaction needs three distinct modalities; got {triple}.")
+            if any(i in self.sharing_factor_weights for i in triple):
+                raise ValueError(
+                    f"Ternary interaction {triple} includes a weight-sharing modality, which is not supported."
+                )
+            missing = [i for i in triple if sizes[i] is None]
+            if missing:
+                raise ValueError(
+                    f"Ternary interaction {triple} needs num_entities for every member; missing for {missing}."
+                )
+            i, j, k = triple
+            self.tri_models[tri_key(i, j, k)] = Ternary(
+                embed_size=max(util_e[i], util_e[j], util_e[k]),
+                x_size=sizes[i],
+                y_size=sizes[j],
+                z_size=sizes[k],
+                dim_x=util_e[i],
+                dim_y=util_e[j],
+                dim_z=util_e[k],
+            )
+            for index in triple:
+                self.num_of_potentials[index] += 1
+
         self.reduce_potentials = nn.ModuleList(
             [nn.Conv1d(self.num_of_potentials[idx], 1, 1, bias=False) for idx in range(self.n_modalities)]
         )
@@ -264,7 +294,8 @@ class FactorGraphAttention(nn.Module):
                     ("prior", self.use_prior),
                 )
                 if on
-            ),
+            )
+            + ("+ternary" if self.ternary_interactions else ""),
         ]
         if self.sharing_factor_weights:
             shared = ", ".join(
@@ -445,6 +476,13 @@ class FactorGraphAttention(nn.Module):
                 factor_ij, factor_ji = self.pp_models[pair_key(i, j)](modalities[i], modalities[j])
                 util_factors.setdefault(i, []).append(factor_ij)
                 util_factors.setdefault(j, []).append(factor_ji)
+
+        # Three-way factors.
+        for triple in self.ternary_interactions:
+            i, j, k = triple
+            potentials = self.tri_models[tri_key(i, j, k)](modalities[i], modalities[j], modalities[k])
+            for index, potential in zip(triple, potentials):
+                util_factors.setdefault(index, []).append(potential)
 
         for i in range(self.n_modalities):
             if self.use_prior:

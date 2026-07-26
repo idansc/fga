@@ -106,6 +106,59 @@ Both are validated, so a typo raises instead of silently building a different gr
 To get the attention distributions for a visualization, pass
 `return_weights=True` (or `output_attentions=True` on the Visual Dialog model).
 
+### Visual Question Answering, with a ternary factor
+
+`fga.tasks.vqa` is a second application: a PyTorch port of
+[HighOrderAtten](https://github.com/idansc/HighOrderAtten) — *High-Order Attention
+Models for Visual Question Answering* (NeurIPS 2017) — rebuilt on the same layer.
+
+```python
+from fga.tasks.vqa import HighOrderAttentionConfig, HighOrderAttentionForVQA
+
+model = HighOrderAttentionForVQA(HighOrderAttentionConfig())
+outputs = model(
+    question_input_ids=question,   # (batch, 15)
+    image_features=regions,        # (batch, 196, 2048)
+    choice_input_ids=choices,      # (batch, 18)
+    labels=answers,
+)
+```
+
+Three modalities are attended jointly — question words, image regions and
+multiple-choice answers — and the distinguishing piece is the **ternary** factor,
+which scores `(region, word, answer)` triples directly:
+
+```
+T[x, y, z] = sum_d  X[x, d] * Y[y, d] * Z[z, d]
+```
+
+A triple can be jointly consistent while no two of its parts stand out on their
+own, so pairwise factors cannot express this. Declare one on any three modalities:
+
+```python
+FactorGraphAttention(
+    embed_dims=[512, 512, 512],
+    num_entities=[15, 196, 18],
+    ternary_interactions=[(0, 1, 2)],
+)
+```
+
+Each member then merges one extra potential. Set `use_ternary=False` for the
+pairwise-only ablation the paper reports.
+
+Two notes on the port. The potentials follow **FGA's** conventions — L2-normalized
+embeddings, a batch-normalized interaction grid, convolutional marginalization —
+rather than the original's `tanh` and learned elementwise scaling. And the
+interaction tensor is `x*y*z` values per example (~53k at the VQA sizes), so it is
+affordable for three modalities but would not be for four.
+
+The fusion head uses Compact Bilinear Pooling, implemented in
+`fga.tasks.vqa.pooling` via the Count Sketch and an FFT, which approximates the
+`d^2` outer product in `O(d + m log m)`.
+
+> The model and its tests are included; the VQA data pipeline is not — you will
+> need question/answer preprocessing and image features of your own.
+
 ### Other uses of FGA
 
 The layer is the reusable part of the paper, and has been applied well beyond
