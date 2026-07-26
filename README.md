@@ -216,7 +216,7 @@ python scripts/convert_legacy_checkpoint.py \
 
 The converter strips `DataParallel` prefixes, renames the parameters to the
 current module layout, and writes `config.json` + `model.safetensors`. Pass
-`--push_to_hub <user>/fga` to publish. `tests/test_equivalence.py` checks that a
+`--push_to_hub Idan/fga` to publish. `tests/test_equivalence.py` checks that a
 converted checkpoint reproduces the original model's scores exactly.
 
 ## Results
@@ -232,6 +232,27 @@ Our model achieves the following performance on the validation set, and similar 
 | --- | --- | --- |
 | FGA | 53% | 66 |
 | 5×FGA | 56% | 69 |
+
+### Reproduced with this code
+
+Trained from scratch with the commands above — 10 epochs on 8×L40S, about 3 hours —
+using image features re-extracted with the same Visual-Genome-finetuned detector,
+since every published copy of the originals is now offline.
+
+| Epoch | R@1 | R@5 | R@10 | MRR | Mean rank | NDCG |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 44.09 | 73.67 | 83.39 | 57.85 | 5.95 | 49.16 |
+| 3 | 50.66 | 81.36 | 89.75 | 64.48 | 4.18 | 55.28 |
+| **5** | **52.46** | **82.95** | **90.97** | **66.01** | **3.92** | 56.46 |
+| 7 | 52.23 | 83.05 | 90.70 | 65.79 | 3.98 | 57.44 |
+| 10 | 51.23 | 81.48 | 89.81 | 64.68 | 4.31 | **58.19** |
+
+MRR peaks at epoch 5 and matches the published 66; R@1 comes in 0.54 lower. NDCG keeps
+climbing after MRR has turned over, which is the metric tension the
+[2020 challenge submission](https://github.com/idansc/mrr-ndcg) dealt with — checkpoints
+are saved every epoch so you can select per metric.
+
+Weights for the epoch-5 checkpoint: [Idan/fga](https://huggingface.co/Idan/fga).
 
 Note, the paper results may slightly vary from the results of this repo, since it is a refactored version.
 For the legacy version, please contact via email.
