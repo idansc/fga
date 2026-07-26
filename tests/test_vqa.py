@@ -49,20 +49,18 @@ def test_ternary_is_the_three_way_inner_product():
     ternary = Ternary(embed_size=6, x_size=4, y_size=3, z_size=2).eval()
     X, Y, Z = torch.randn(2, 4, 6), torch.randn(2, 3, 6), torch.randn(2, 2, 6)
 
-    from fga.attention.potentials import conv1x1
-
-    x = torch.nn.functional.normalize(conv1x1(X.transpose(1, 2), ternary.embed_X), dim=1)
-    y = torch.nn.functional.normalize(conv1x1(Y.transpose(1, 2), ternary.embed_Y), dim=1)
-    z = torch.nn.functional.normalize(conv1x1(Z.transpose(1, 2), ternary.embed_Z), dim=1)
+    x = torch.nn.functional.normalize(ternary.embed_X(X), dim=-1)
+    y = torch.nn.functional.normalize(ternary.embed_Y(Y), dim=-1)
+    z = torch.nn.functional.normalize(ternary.embed_Z(Z), dim=-1)
 
     expected = torch.zeros(2, 4, 3, 2)
     for b in range(2):
         for i in range(4):
             for j in range(3):
                 for k in range(2):
-                    expected[b, i, j, k] = (x[b, :, i] * y[b, :, j] * z[b, :, k]).sum()
+                    expected[b, i, j, k] = (x[b, i] * y[b, j] * z[b, k]).sum()
 
-    torch.testing.assert_close(torch.einsum("bdx,bdy,bdz->bxyz", x, y, z), expected, atol=1e-5, rtol=1e-4)
+    torch.testing.assert_close(torch.einsum("bxd,byd,bzd->bxyz", x, y, z), expected, atol=1e-5, rtol=1e-4)
 
 
 def test_ternary_returns_one_potential_per_modality():
@@ -216,3 +214,113 @@ def test_save_and_from_pretrained_round_trip(tiny_config, tiny_batch, tmp_path):
     with torch.no_grad():
         after = reloaded(**tiny_batch).logits
     torch.testing.assert_close(before, after)
+
+
+# --- open-ended VQA ---
+
+
+@pytest.fixture
+def open_ended_config():
+    from fga.tasks.vqa import OpenEndedVQAConfig
+
+    return OpenEndedVQAConfig(
+        vocab_size=200,
+        num_answers=50,
+        hidden_size=32,
+        word_embed_dim=32,
+        image_feature_dim=64,
+        num_regions=12,
+        max_question_length=7,
+        pooling_dim=128,
+    )
+
+
+def open_ended_batch(config, batch=3):
+    torch.manual_seed(0)
+    return {
+        "question_input_ids": torch.randint(1, config.vocab_size, (batch, config.max_question_length)),
+        "image_features": torch.randn(batch, config.num_regions, config.image_feature_dim),
+    }
+
+
+def test_open_ended_classifies_the_answer_vocabulary(open_ended_config):
+    from fga.tasks.vqa import OpenEndedVQAModel
+
+    model = OpenEndedVQAModel(open_ended_config).eval()
+    with torch.no_grad():
+        out = model(**open_ended_batch(open_ended_config), labels=torch.randint(0, 50, (3,)))
+    assert out.logits.shape == (3, open_ended_config.num_answers)
+    assert torch.isfinite(out.loss)
+
+
+def test_open_ended_has_no_ternary_factor(open_ended_config):
+    """Two modalities, so there is nothing for a three-way factor to act on."""
+    from fga.tasks.vqa import OpenEndedVQAModel
+
+    model = OpenEndedVQAModel(open_ended_config)
+    assert model.attention.n_modalities == 2
+    assert not model.attention.ternary_interactions
+
+
+def test_open_ended_attends_words_and_regions(open_ended_config):
+    from fga.tasks.vqa import OpenEndedVQAModel
+
+    model = OpenEndedVQAModel(open_ended_config).eval()
+    with torch.no_grad():
+        out = model(**open_ended_batch(open_ended_config), output_attentions=True)
+    assert [tuple(a.shape) for a in out.attentions] == [
+        (3, open_ended_config.max_question_length),
+        (3, open_ended_config.num_regions),
+    ]
+
+
+def test_open_ended_soft_targets_match_graded_answers(open_ended_config):
+    """VQA credits an answer given by 3 of 10 annotators, so the label is graded."""
+    from fga.tasks.vqa import OpenEndedVQAModel
+
+    open_ended_config.soft_targets = True
+    model = OpenEndedVQAModel(open_ended_config).eval()
+
+    scores = torch.zeros(3, open_ended_config.num_answers)
+    scores[:, 1] = 1.0
+    scores[:, 2] = 0.6  # a second acceptable answer
+
+    with torch.no_grad():
+        soft = model(**open_ended_batch(open_ended_config), answer_scores=scores).loss
+        hard = model(**open_ended_batch(open_ended_config), labels=torch.ones(3, dtype=torch.long)).loss
+    assert torch.isfinite(soft) and not torch.isclose(soft, hard)
+
+
+def test_open_ended_round_trips(open_ended_config, tmp_path):
+    from fga.tasks.vqa import OpenEndedVQAModel
+
+    model = OpenEndedVQAModel(open_ended_config).eval()
+    batch = open_ended_batch(open_ended_config)
+    with torch.no_grad():
+        before = model(**batch).logits
+    model.save_pretrained(tmp_path)
+    with torch.no_grad():
+        after = OpenEndedVQAModel.from_pretrained(tmp_path).eval()(**batch).logits
+    torch.testing.assert_close(before, after)
+
+
+def test_ternary_interactions_are_declared_by_name():
+    named = FactorGraphAttention(
+        embed_dims=[8, 8, 8],
+        num_entities=[5, 6, 4],
+        modality_names=["question", "image", "answer"],
+        ternary_interactions=[("question", "image", "answer")],
+    )
+    indexed = FactorGraphAttention(embed_dims=[8, 8, 8], num_entities=[5, 6, 4], ternary_interactions=[(0, 1, 2)])
+    assert named.ternary_interactions == indexed.ternary_interactions == [(0, 1, 2)]
+    assert "ternary=[(question, image, answer)]" in repr(named)
+
+
+def test_ternary_with_an_unknown_name_is_a_clear_error():
+    with pytest.raises(ValueError, match="Unknown modality 'answr'"):
+        FactorGraphAttention(
+            embed_dims=[8, 8, 8],
+            num_entities=[5, 6, 4],
+            modality_names=["question", "image", "answer"],
+            ternary_interactions=[("question", "image", "answr")],
+        )

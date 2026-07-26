@@ -34,7 +34,7 @@ def count_sketch(x: torch.Tensor, hash_index: torch.Tensor, hash_sign: torch.Ten
         output_dim: number of bins.
     """
     sketch = x.new_zeros(x.size(0), output_dim)
-    return sketch.index_add_(1, hash_index, x * hash_sign)
+    return sketch.index_add_(1, hash_index, x * hash_sign.to(x.dtype))
 
 
 class CompactBilinearPooling(nn.Module):
@@ -83,6 +83,10 @@ class CompactBilinearPooling(nn.Module):
         self.register_buffer("y_sign", y_sign)
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        # Computed in float32 regardless of autocast: torch.fft has no bf16
+        # kernels, and the sketch is a rounding-sensitive sum of many terms.
+        # The cost is negligible next to the attention.
+        x, y = x.float(), y.float()
         sketch_x = count_sketch(x, self.x_index, self.x_sign, self.output_dim)
         sketch_y = count_sketch(y, self.y_index, self.y_sign, self.output_dim)
 

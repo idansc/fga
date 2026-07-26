@@ -141,12 +141,14 @@ from fga import FactorGraphAttention, Modality
 attention = FactorGraphAttention(embed_dims=[512, 2048], num_entities=[20, 36])
 pooled_text, pooled_image = attention(text, image)
 
-# or declared by name, with a repeated modality sharing factor weights
-attention = FactorGraphAttention.from_modalities([
-    Modality("text",    dim=512,  size=20),
-    Modality("image",   dim=2048, size=36),
-    Modality("history", dim=128,  size=21, repeats=9, connected_to=("text", "image")),
-], use_prior=True)
+# or declared by name, with weight sharing stated separately
+history = [Modality(f"history_{i}", dim=128, size=21, connected_to=("text", "image"))
+           for i in range(1, 10)]
+attention = FactorGraphAttention.from_modalities(
+    [Modality("text", dim=512, size=20), Modality("image", dim=2048, size=36), *history],
+    share_weights=[[m.name for m in history]],
+    use_prior=True,
+)
 ```
 
 The same layer backs the paper's follow-ups in
