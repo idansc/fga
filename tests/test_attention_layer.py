@@ -9,7 +9,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from fga.attention import FactorGraphAttention, Utility
+from fga.attention import FactorGraphAttention, Modality, Utility
 
 
 def test_used_like_any_other_nn_layer():
@@ -155,3 +155,118 @@ def test_the_layer_does_not_import_the_task_package():
         assert "visual_dialog" not in getattr(module, "__file__", "")
         # no task symbols leaked into the general namespace
         assert not any(name.startswith("VisDial") or name.startswith("FGAFor") for name in dir(module)), source
+
+
+# --- explicit modalities with separately declared weight sharing ---
+
+
+def _tied_pair(batch=3, repeats=4):
+    """The same graph expressed both ways, sharing one set of weights."""
+    torch.manual_seed(0)
+    compact = FactorGraphAttention.from_modalities(
+        [
+            Modality("answer", dim=8, size=10),
+            Modality("question", dim=8, size=6),
+            Modality("history", dim=4, size=5, repeats=repeats, connected_to=("answer", "question")),
+        ]
+    ).eval()
+    torch.manual_seed(0)
+    explicit = FactorGraphAttention.from_modalities(
+        [Modality("answer", dim=8, size=10), Modality("question", dim=8, size=6)]
+        + [Modality(f"history_{i}", dim=4, size=5, connected_to=("answer", "question")) for i in range(repeats)],
+        tied_weights=[[f"history_{i}" for i in range(repeats)]],
+    ).eval()
+    explicit.load_state_dict(compact.state_dict())
+    return compact, explicit
+
+
+def test_tied_modalities_match_the_repeats_form_exactly():
+    """The explicit spelling must be the same model, not merely a similar one."""
+    batch, repeats = 3, 4
+    compact, explicit = _tied_pair(batch, repeats)
+
+    answer = torch.randn(batch, 10, 8)
+    question = torch.randn(batch, 6, 8)
+    history = torch.randn(batch, repeats, 5, 4)
+
+    with torch.no_grad():
+        packed = compact(answer, question, history.reshape(batch * repeats, 5, 4))
+        split = explicit(answer, question, *[history[:, i] for i in range(repeats)])
+
+    torch.testing.assert_close(packed[0], split[0])
+    torch.testing.assert_close(packed[1], split[1])
+    per_round = packed[2].view(batch, repeats, 4)
+    for i in range(repeats):
+        torch.testing.assert_close(per_round[:, i], split[2 + i])
+
+
+def test_tied_modalities_share_one_set_of_weights():
+    compact, explicit = _tied_pair()
+    assert sum(p.numel() for p in explicit.parameters()) == sum(p.numel() for p in compact.parameters())
+
+
+def test_each_tied_modality_is_returned_separately():
+    _, explicit = _tied_pair(batch=3, repeats=4)
+    outputs = explicit(torch.randn(3, 10, 8), torch.randn(3, 6, 8), *[torch.randn(3, 5, 4) for _ in range(4)])
+    assert len(outputs) == 6
+    assert [tuple(o.shape) for o in outputs[2:]] == [(3, 4)] * 4
+
+
+def test_tied_weights_returns_per_modality_attention():
+    _, explicit = _tied_pair(batch=2, repeats=4)
+    _, weights = explicit(
+        torch.randn(2, 10, 8),
+        torch.randn(2, 6, 8),
+        *[torch.randn(2, 5, 4) for _ in range(4)],
+        return_weights=True,
+    )
+    assert len(weights) == 6
+    assert [tuple(w.shape) for w in weights[2:]] == [(2, 5)] * 4
+    for w in weights:
+        torch.testing.assert_close(w.sum(-1), torch.ones(w.size(0)))
+
+
+def test_tied_modalities_must_agree_on_shape():
+    with pytest.raises(ValueError, match="match in shape"):
+        FactorGraphAttention.from_modalities(
+            [
+                Modality("a", dim=8, size=5),
+                Modality("h1", dim=4, size=5, connected_to=("a",)),
+                Modality("h2", dim=6, size=5, connected_to=("a",)),
+            ],
+            tied_weights=[["h1", "h2"]],
+        )
+
+
+def test_tied_modalities_must_agree_on_connections():
+    with pytest.raises(ValueError, match="share connections"):
+        FactorGraphAttention.from_modalities(
+            [
+                Modality("a", dim=8, size=5),
+                Modality("b", dim=8, size=5),
+                Modality("h1", dim=4, size=5, connected_to=("a",)),
+                Modality("h2", dim=4, size=5, connected_to=("b",)),
+            ],
+            tied_weights=[["h1", "h2"]],
+        )
+
+
+def test_a_modality_cannot_be_in_two_tied_groups():
+    with pytest.raises(ValueError, match="more than one tied_weights group"):
+        FactorGraphAttention.from_modalities(
+            [
+                Modality("a", dim=8, size=5),
+                Modality("h1", dim=4, size=5, connected_to=("a",)),
+                Modality("h2", dim=4, size=5, connected_to=("a",)),
+                Modality("h3", dim=4, size=5, connected_to=("a",)),
+            ],
+            tied_weights=[["h1", "h2"], ["h1", "h3"]],
+        )
+
+
+def test_tied_weights_names_must_exist():
+    with pytest.raises(ValueError, match="unknown modality"):
+        FactorGraphAttention.from_modalities(
+            [Modality("a", dim=8, size=5), Modality("h1", dim=4, size=5, connected_to=("a",))],
+            tied_weights=[["h1", "typo"]],
+        )

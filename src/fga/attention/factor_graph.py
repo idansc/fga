@@ -24,8 +24,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .modality import Modality, modalities_to_index_args
-from .potentials import Pairwise, Unary, pair_key, self_key
+from .modality import Modality, ModalityPlan, plan_modalities
+from .potentials import Pairwise, Unary, conv1x1, pair_key, self_key
 
 __all__ = ["FactorGraphAttention", "Atten", "NaiveAttention"]
 
@@ -141,6 +141,10 @@ class FactorGraphAttention(nn.Module):
         if len(self.modality_names) != self.n_modalities:
             raise ValueError(f"Got {len(self.modality_names)} modality_names for {self.n_modalities} modalities.")
 
+        # Set by `from_modalities` when modalities are tied into shared-weight
+        # groups; `None` means the caller passes one tensor per internal entry.
+        self._plan: Optional[ModalityPlan] = None
+
         self.spatial_pool = nn.ModuleDict()
         self.un_models = nn.ModuleList()
 
@@ -196,7 +200,12 @@ class FactorGraphAttention(nn.Module):
         )
 
     @classmethod
-    def from_modalities(cls, modalities: Sequence[Modality], **kwargs) -> "FactorGraphAttention":
+    def from_modalities(
+        cls,
+        modalities: Sequence[Modality],
+        tied_weights: Optional[Sequence[Sequence[str]]] = None,
+        **kwargs,
+    ) -> "FactorGraphAttention":
         """Build from named [`Modality`] specs instead of parallel index-aligned lists.
 
         ```python
@@ -213,14 +222,16 @@ class FactorGraphAttention(nn.Module):
 
         Any remaining keyword arguments go to [`FactorGraphAttention`].
         """
-        util_e, sizes, sharing = modalities_to_index_args(modalities)
-        return cls(
-            util_e=util_e,
-            sizes=sizes,
-            sharing_factor_weights=sharing,
-            modality_names=[u.name for u in modalities],
+        plan = plan_modalities(modalities, tied_weights)
+        module = cls(
+            embed_dims=list(plan.embed_dims),
+            num_entities=list(plan.num_entities),
+            sharing_factor_weights=plan.sharing_factor_weights,
+            modality_names=[modalities[group[0]].name for group in plan.groups],
             **kwargs,
         )
+        module._plan = plan
+        return module
 
     # The paper's spellings, kept so downstream forks that read these keep working.
     @property
@@ -305,6 +316,61 @@ class FactorGraphAttention(nn.Module):
         if len(modalities) == 1 and isinstance(modalities[0], (list, tuple)):
             modalities = modalities[0]
 
+        plan = self._plan
+        if plan is not None and not plan.is_trivial and len(modalities) == len(plan.names):
+            # The caller passes one tensor per *modality*; tied modalities share a
+            # single set of weights, so their tensors are merged into one entry.
+            # The shared factors index rows as batch-major, repeat-minor -- the same
+            # order `expand(batch, repeats, ...).view(batch * repeats, ...)` produces --
+            # so members must be stacked along a new axis 1, not concatenated.
+            merged = []
+            for group in plan.groups:
+                if len(group) == 1:
+                    merged.append(modalities[group[0]])
+                else:
+                    stacked = torch.stack([modalities[i] for i in group], dim=1)
+                    merged.append(stacked.reshape(-1, *stacked.shape[2:]))
+            if priors is not None:
+                merged_priors = []
+                for group in plan.groups:
+                    if len(group) == 1:
+                        merged_priors.append(priors[group[0]])
+                    elif priors[group[0]] is None:
+                        merged_priors.append(None)
+                    else:
+                        stacked = torch.stack([priors[i] for i in group], dim=1)
+                        merged_priors.append(stacked.reshape(-1, *stacked.shape[2:]))
+                priors = merged_priors
+            modalities = merged
+
+            result = self._attend(modalities, priors, return_weights)
+            attention, weights = result if return_weights else (result, None)
+
+            # Split the tied entries back out, in the caller's modality order.
+            per_modality: List[Optional[torch.Tensor]] = [None] * len(plan.names)
+            per_modality_weights: List[Optional[torch.Tensor]] = [None] * len(plan.names)
+            for entry, group in enumerate(plan.groups):
+                if len(group) == 1:
+                    per_modality[group[0]] = attention[entry]
+                    if weights is not None:
+                        per_modality_weights[group[0]] = weights[entry]
+                else:
+                    pooled = attention[entry].view(-1, len(group), attention[entry].size(-1))
+                    for position, index in enumerate(group):
+                        per_modality[index] = pooled[:, position]
+                    if weights is not None:
+                        w = weights[entry].view(-1, len(group), weights[entry].size(-1))
+                        for position, index in enumerate(group):
+                            per_modality_weights[index] = w[:, position]
+
+            if return_weights:
+                return per_modality, per_modality_weights
+            return per_modality
+
+        return self._attend(modalities, priors, return_weights)
+
+    def _attend(self, modalities, priors, return_weights: bool):
+        """Attend over one tensor per internal entry, tied groups already merged."""
         if self.n_modalities != len(modalities):
             raise ValueError(
                 f"{type(self).__name__} was built for {self.n_modalities} utilities "
@@ -389,7 +455,7 @@ class FactorGraphAttention(nn.Module):
                 [p if p.dim() == 3 else p.unsqueeze(1) for p in util_factors[i]],
                 dim=1,
             )
-            logits = self.reduce_potentials[i](factors).squeeze(1)
+            logits = conv1x1(factors, self.reduce_potentials[i]).squeeze(1)
             weights = F.softmax(logits, dim=1)
             attention.append(torch.bmm(modalities[i].transpose(1, 2), weights.unsqueeze(2)).squeeze(2))
             if return_weights:
