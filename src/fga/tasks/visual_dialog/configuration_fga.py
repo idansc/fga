@@ -11,12 +11,12 @@ from transformers import PretrainedConfig
 class FGAConfig(PretrainedConfig):
     r"""Configuration for [`FGAModel`].
 
-    The model treats every modality as a *utility*: a set of entities with an
-    embedding each (100 answer options, the question words, the caption words,
-    the image regions, and the question/answer of each history round). Attention
-    over a utility is the softmax of a sum of learned potentials -- unary,
-    self-interaction, pairwise interaction with the other utilities, and an
-    optional prior -- exactly as in a factor graph.
+    Every modality is a set of entities with an embedding each: the 100 answer
+    options, the question words, the caption words, the image regions, and the
+    question/answer of each history round. Attention over a modality is the
+    softmax of a sum of learned potentials -- unary, self-interaction, pairwise
+    interaction with the other modalities, and an optional prior -- exactly as in
+    a factor graph.
 
     Args:
         vocab_size (`int`, *optional*, defaults to 8964):
@@ -49,13 +49,13 @@ class FGAConfig(PretrainedConfig):
         num_history_rounds (`int`, *optional*, defaults to 9):
             Number of previous rounds fed as history (10 rounds - the current one).
         utility_sizes (`List[int]`, *optional*, defaults to `[100, 21, 41, 37, 21, 21]`):
-            Number of entities per utility, ordered as
+            Number of entities per modality, ordered as
             `[answer, question, caption, image, history-question, history-answer]`.
             These are fixed because the pairwise factors batch-norm over the
             flattened `size_x * size_y` interaction grid. Set `size_force=True` to
             adaptively pool inputs to these sizes instead.
         sharing_factor_weights (`Dict[int, Tuple[int, List[int]]]`, *optional*):
-            Maps a utility index to `(num_repeats, connected_utility_indices)`.
+            Maps a modality index to `(num_repeats, connected_modality_indices)`.
             Used so the 9 history rounds share one set of factor weights.
             Defaults to `{4: (9, [0, 1]), 5: (9, [0, 1])}`.
 
@@ -63,17 +63,17 @@ class FGAConfig(PretrainedConfig):
             `shared_utilities` instead:
 
             ```python
-            FGAConfig(shared_utilities=[
+            FGAConfig(shared_modalities=[
                 {"name": "history_question", "repeats": 9, "connected_to": ["answer", "question"]},
                 {"name": "history_answer",   "repeats": 9, "connected_to": ["answer", "question"]},
             ])
             ```
 
-            and read it back with the `shared_utilities` property.
-        shared_utilities (`List[Dict]`, *optional*):
+            and read it back with the `shared_modalities` property.
+        shared_modalities (`List[Dict]`, *optional*):
             Readable alternative to `sharing_factor_weights`, using the names in
-            `fga.modeling_fga.UTILITY_NAMES`. Normalized into
-            `sharing_factor_weights` on construction; passing both is an error.
+            [`FGAConfig.MODALITY_NAMES`]. Normalized into `sharing_factor_weights`
+            on construction; passing both is an error. Alias: `shared_utilities`.
         use_prior (`bool`, *optional*, defaults to `True`):
             Add the length/uniform prior potential.
         use_pairwise (`bool`, *optional*, defaults to `True`):
@@ -123,6 +123,7 @@ class FGAConfig(PretrainedConfig):
         num_history_rounds: int = 9,
         utility_sizes: Optional[Sequence[int]] = None,
         sharing_factor_weights: Optional[Dict[int, Tuple[int, List[int]]]] = None,
+        shared_modalities: Optional[List[Dict[str, Any]]] = None,
         shared_utilities: Optional[List[Dict[str, Any]]] = None,
         use_prior: bool = True,
         use_pairwise: bool = True,
@@ -149,12 +150,13 @@ class FGAConfig(PretrainedConfig):
         self.num_options = num_options
         self.num_history_rounds = num_history_rounds
         self.utility_sizes = list(utility_sizes) if utility_sizes is not None else [100, 21, 41, 37, 21, 21]
-        if shared_utilities is not None:
+        shared_modalities = shared_modalities if shared_modalities is not None else shared_utilities
+        if shared_modalities is not None:
             if sharing_factor_weights is not None:
                 raise ValueError(
-                    "Pass either shared_utilities (readable) or sharing_factor_weights (indexed), not both."
+                    "Pass either shared_modalities (readable) or sharing_factor_weights (indexed), not both."
                 )
-            sharing_factor_weights = self._shared_utilities_to_indices(shared_utilities)
+            sharing_factor_weights = self._shared_modalities_to_indices(shared_modalities)
 
         # json round-trips dict keys as strings; normalize back to int.
         if sharing_factor_weights is None:
@@ -177,38 +179,48 @@ class FGAConfig(PretrainedConfig):
         kwargs.setdefault("pad_token_id", 0)
         super().__init__(**kwargs)
 
-    #: Utility order fixing the meaning of every index in this config.
-    UTILITY_NAMES = ("answer", "question", "caption", "image", "history_question", "history_answer")
+    #: Modality order fixing the meaning of every index in this config.
+    MODALITY_NAMES = ("answer", "question", "caption", "image", "history_question", "history_answer")
+
+    #: The paper's term for the same ordering.
+    UTILITY_NAMES = MODALITY_NAMES
 
     @classmethod
-    def _shared_utilities_to_indices(cls, shared_utilities: List[Dict[str, Any]]) -> Dict[int, Tuple[int, List[int]]]:
-        index_of = {name: i for i, name in enumerate(cls.UTILITY_NAMES)}
+    def _shared_modalities_to_indices(
+        cls, shared_modalities: List[Dict[str, Any]]
+    ) -> Dict[int, Tuple[int, List[int]]]:
+        index_of = {name: i for i, name in enumerate(cls.MODALITY_NAMES)}
 
         def resolve(name: str) -> int:
             if name not in index_of:
-                raise ValueError(f"Unknown utility {name!r}; expected one of {list(cls.UTILITY_NAMES)}.")
+                raise ValueError(f"Unknown modality {name!r}; expected one of {list(cls.MODALITY_NAMES)}.")
             return index_of[name]
 
         return {
             resolve(entry["name"]): (int(entry["repeats"]), [resolve(n) for n in entry["connected_to"]])
-            for entry in shared_utilities
+            for entry in shared_modalities
         }
 
     @property
-    def shared_utilities(self) -> List[Dict[str, Any]]:
-        """`sharing_factor_weights` rendered with utility names instead of indices."""
+    def shared_modalities(self) -> List[Dict[str, Any]]:
+        """`sharing_factor_weights` rendered with modality names instead of indices."""
         return [
             {
-                "name": self.UTILITY_NAMES[index],
+                "name": self.MODALITY_NAMES[index],
                 "repeats": repeats,
-                "connected_to": [self.UTILITY_NAMES[i] for i in connected],
+                "connected_to": [self.MODALITY_NAMES[i] for i in connected],
             }
             for index, (repeats, connected) in sorted(self.sharing_factor_weights.items())
         ]
 
     @property
-    def utility_dims(self) -> List[int]:
-        """Embedding dimension of each utility, in canonical utility order."""
+    def shared_utilities(self) -> List[Dict[str, Any]]:
+        """The paper's name for [`shared_modalities`]."""
+        return self.shared_modalities
+
+    @property
+    def modality_dims(self) -> List[int]:
+        """Embedding dimension of each modality, in canonical order."""
         return [
             self.hidden_ans_dim,  # 0: answer options
             self.hidden_ques_dim,  # 1: question
@@ -217,3 +229,8 @@ class FGAConfig(PretrainedConfig):
             self.hidden_hist_dim,  # 4: history questions
             self.hidden_hist_dim,  # 5: history answers
         ]
+
+    @property
+    def utility_dims(self) -> List[int]:
+        """The paper's name for [`modality_dims`]."""
+        return self.modality_dims

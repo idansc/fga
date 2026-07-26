@@ -51,6 +51,10 @@ This is the official implementation of [Factor Graph Attention](https://arxiv.or
 
 * Part of 2020 visual dialog challenge winning submission (https://github.com/idansc/mrr-ndcg)
 
+This checkpoint targets **MRR**. For the NDCG-oriented variant, finetuned on the dense
+relevance annotations, see [`Idan/fga-ndcg`](https://huggingface.co/Idan/fga-ndcg)
+(NDCG 69.07 against this model's 56.46, at the cost of MRR).
+
 Use cases of FGA:
 * Video dialog, spatial interactions between frames, can be found here (https://github.com/idansc/simple-avsd)
 * Spatial navigation, can be found here (https://github.com/barmayo/spatial_attention)
@@ -58,14 +62,14 @@ Use cases of FGA:
 
 ## How it works
 
-Every modality is a *utility*: a set of entities with an embedding each — the 100
-candidate answers, the question words, the caption words, the image regions, and the
-question and answer of each history round. Attention over a utility is the softmax of a
-sum of learned potentials, exactly as in a factor graph:
+Every modality is a set of entities with an embedding each — the 100 candidate answers,
+the question words, the caption words, the image regions, and the question and answer of
+each history round. Attention over a modality is the softmax of a sum of learned
+potentials, exactly as in a factor graph:
 
 * **unary** — how salient an entity is on its own,
-* **self** — how an entity relates to the other entities of the same utility,
-* **pairwise** — how an entity relates to the entities of every other utility,
+* **self** — how an entity relates to the other entities of the same modality,
+* **pairwise** — how an entity relates to the entities of every other modality,
 * **prior** — an external bias, such as sentence-length cues.
 
 The potentials are stacked and combined by a learned, bias-free `Conv1d`, so the model
@@ -125,7 +129,7 @@ ranking = outputs.logits.argsort(dim=-1, descending=True)
 
 Install with `pip install git+https://github.com/idansc/fga.git`.
 
-Pass `output_attentions=True` to get the per-utility attention distributions for
+Pass `output_attentions=True` to get the per-modality attention distributions for
 visualization.
 
 The attention block is the reusable part of the paper and knows nothing about Visual

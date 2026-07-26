@@ -57,8 +57,7 @@ fga.tasks.visual_dialog    the application the paper reports
 
 `fga.attention` is an ordinary `torch.nn` layer. A **modality** is any set of
 entities carrying an embedding each: words in a sentence, regions in an image,
-frames in a video, candidate answers, previous dialog rounds. (The paper calls
-these *utilities*; both names work throughout.)
+frames in a video, candidate answers, previous dialog rounds.
 
 ```python
 import torch
@@ -125,14 +124,14 @@ with `size_flag` for `sharing_factor_weights`.
 `FGAConfig` takes the same readable form:
 
 ```python
-FGAConfig(shared_utilities=[
+FGAConfig(shared_modalities=[
     {"name": "history_question", "repeats": 9, "connected_to": ["answer", "question"]},
     {"name": "history_answer",   "repeats": 9, "connected_to": ["answer", "question"]},
 ])
 ```
 
 The indexed `sharing_factor_weights` stays the serialized field, so old configs
-and published checkpoints keep loading, and `config.shared_utilities` renders it
+and published checkpoints keep loading, and `config.shared_modalities` renders it
 by name.
 
 ## Data
@@ -286,6 +285,54 @@ climbing after MRR has turned over, which is the metric tension the
 are saved every epoch so you can select per metric.
 
 Weights for the epoch-5 checkpoint: [Idan/fga](https://huggingface.co/Idan/fga).
+
+### Optimizing NDCG instead
+
+The sparse label calls one candidate correct and 99 equally wrong, which is what MRR
+measures. NDCG instead scores against the graded relevance five annotators gave every
+candidate — and for "is it daytime?" the list contains *yes*, *yeah* and *yes it is*.
+Finetuning on that graded signal moves NDCG a long way, at the cost of MRR:
+
+| Objective | NDCG | MRR | R@1 | R@5 | R@10 | Mean rank |
+| --- | --- | --- | --- | --- | --- | --- |
+| sparse only (baseline) | 56.46 | **66.01** | 52.46 | 82.95 | 90.97 | 3.92 |
+| dense only | **69.07** | 49.03 | 34.27 | 66.15 | 80.13 | 6.68 |
+| dense + sparse (0.5) | 68.00 | 61.93 | 49.55 | 76.59 | 86.14 | 5.07 |
+| dense + sparse (1.0) | 66.61 | 63.27 | 50.69 | 78.33 | 87.38 | 4.78 |
+| ApproxNDCG | 62.43 | 57.90 | 45.05 | 73.56 | 84.21 | 6.14 |
+
+Trained on the 2,000-image dense subset of *train*; the val annotations are never
+trained on. `sparse_weight=1.0` is the knee of the curve — 10 of the 12.6 available NDCG
+points for 2.7 MRR, where the pure-dense end gives up 17 MRR for the last 2.5.
+
+A smooth approximation of NDCG itself (ApproxNDCG, Qin et al.) is implemented too and is
+clearly worse here, most likely because it concentrates gradient on the few positions the
+discount rewards while the soft cross entropy draws signal from all 100 candidates —
+which matters with only 2,000 examples.
+
+```bash
+python scripts/finetune_dense.py \
+    --model_name_or_path models/fga/checkpoint-XXXX \
+    --train_dense_path data/visdial_1.0_train_dense_annotations.json \
+    --output_dir models/fga-ndcg --loss soft_ce --sparse_weight 1.0 \
+    --learning_rate 1e-4 --num_train_epochs 5
+```
+
+NDCG weights: [Idan/fga-ndcg](https://huggingface.co/Idan/fga-ndcg).
+
+### Ensembling
+
+The paper reports 5xFGA alongside the single model. `scripts/ensemble_eval.py` combines
+checkpoints by averaging either scores or ranks — the latter being scale-free, which
+matters when mixing an MRR model with a dense-finetuned one, whose score distributions
+differ sharply:
+
+```bash
+python scripts/ensemble_eval.py --models models/fga-seed*/checkpoint-* --combine score rank
+```
+
+The two metrics disagreeing is the subject of the
+[2020 challenge submission](https://github.com/idansc/mrr-ndcg).
 
 Note, the paper results may slightly vary from the results of this repo, since it is a refactored version.
 For the legacy version, please contact via email.

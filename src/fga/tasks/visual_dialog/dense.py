@@ -34,7 +34,79 @@ from transformers import Trainer
 
 from .data import DenseAnnotationsReader, VisDialDataset
 
-__all__ = ["DenseVisDialDataset", "DenseFinetuneTrainer", "dense_soft_cross_entropy"]
+__all__ = [
+    "DenseVisDialDataset",
+    "DenseFinetuneTrainer",
+    "approx_ndcg_loss",
+    "dense_soft_cross_entropy",
+]
+
+
+def approx_ndcg_loss(
+    logits: torch.Tensor,
+    relevance: torch.Tensor,
+    temperature: float = 1.0,
+    normalize_scores: bool = True,
+) -> torch.Tensor:
+    """A differentiable approximation of NDCG, following Qin et al. (2010).
+
+    Soft cross entropy matches a distribution, which is not quite the objective:
+    it spends as much effort separating ranks 80 and 81 as ranks 1 and 2, while
+    NDCG discounts by position and mostly cares about the top. ApproxNDCG instead
+    smooths the *rank* itself, replacing the hard sort with
+
+        rank(i) ~= 1 + sum_{j != i} sigmoid((s_j - s_i) / temperature)
+
+    which is differentiable, and plugs it straight into the NDCG definition. As
+    the temperature falls this converges on the true metric, at the cost of
+    vanishing gradients.
+
+    Gains are linear in the relevance, matching the official VisDial NDCG
+    implementation, rather than the `2^rel - 1` used elsewhere in the ranking
+    literature -- the loss has to approximate the metric actually being reported.
+
+    Args:
+        logits: `(batch, num_options)` model scores.
+        relevance: `(batch, num_options)` non-negative human relevance.
+        temperature: smoothing of the rank approximation; lower is sharper.
+        normalize_scores: divide each row's scores by their standard deviation
+            first, so that `temperature` means the same thing regardless of how
+            spread the model's logits happen to be. Without it, a confident model
+            saturates every sigmoid and the rank approximation stops responding.
+            It does not change the ranking being scored.
+
+    Note that this loss has a much smaller natural gradient magnitude than the
+    soft cross entropy -- NDCG gains are bounded by 1 and the position discount is
+    flat -- so it needs a scale-invariant optimizer. Adam is fine; plain SGD at the
+    same learning rate will appear not to train.
+
+    Returns: `1 - approximate NDCG`, so that lower is better.
+    """
+    mass = relevance.sum(dim=-1, keepdim=True)
+    keep = (mass > 0).squeeze(-1)
+    if not keep.any():
+        return logits.sum() * 0.0
+
+    scores = logits[keep]
+    gains = relevance[keep]
+
+    if normalize_scores:
+        scores = scores / scores.std(dim=-1, keepdim=True).clamp(min=1e-6)
+
+    # Smooth rank of candidate i: how many candidates are estimated to outrank it.
+    # pairwise[b, i, j] = (s_j - s_i) / temperature, so the sum must run over j.
+    pairwise = (scores.unsqueeze(1) - scores.unsqueeze(2)) / temperature
+    approx_rank = 1.0 + (torch.sigmoid(pairwise).sum(dim=2) - 0.5)
+
+    discounted = gains / torch.log2(approx_rank + 1.0)
+    dcg = discounted.sum(dim=-1)
+
+    # Ideal DCG uses the true sort, and needs no gradient.
+    ideal_gains, _ = gains.sort(dim=-1, descending=True)
+    positions = torch.arange(gains.size(-1), device=gains.device, dtype=gains.dtype)
+    ideal_dcg = (ideal_gains / torch.log2(positions + 2.0)).sum(dim=-1)
+
+    return (1.0 - dcg / ideal_dcg.clamp(min=1e-12)).mean()
 
 
 def dense_soft_cross_entropy(logits: torch.Tensor, relevance: torch.Tensor) -> torch.Tensor:
@@ -126,32 +198,65 @@ class DenseFinetuneTrainer(Trainer):
     """[`Trainer`] whose loss is the graded relevance, optionally mixed with the sparse one.
 
     Args:
-        dense_weight: weight on the dense soft-label term.
+        loss_kind: `"soft_ce"` for the soft-label cross entropy (what the VisDial
+            literature generally uses), or `"approx_ndcg"` to optimize a smooth
+            approximation of the metric itself.
+        approx_ndcg_temperature: rank smoothing, when `loss_kind="approx_ndcg"`.
+        dense_weight: weight on the dense term.
         sparse_weight: weight on the ordinary one-hot cross entropy. Set to 0 for
             a purely NDCG-driven objective; a small value retains some of the MRR
             behaviour, since training only on graded relevance is known to trade
             MRR away.
     """
 
-    def __init__(self, *args, dense_weight: float = 1.0, sparse_weight: float = 0.0, **kwargs):
+    def __init__(
+        self,
+        *args,
+        dense_weight: float = 1.0,
+        sparse_weight: float = 0.0,
+        loss_kind: str = "soft_ce",
+        approx_ndcg_temperature: float = 1.0,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
+        if loss_kind not in ("soft_ce", "approx_ndcg"):
+            raise ValueError(f"loss_kind must be 'soft_ce' or 'approx_ndcg', got {loss_kind!r}")
         self.dense_weight = dense_weight
         self.sparse_weight = sparse_weight
+        self.loss_kind = loss_kind
+        self.approx_ndcg_temperature = approx_ndcg_temperature
 
     def compute_loss(self, model, inputs, return_outputs: bool = False, **kwargs):
         relevance = inputs.pop("relevance", None)
-        labels = inputs.get("labels")
-        if self.sparse_weight == 0:
-            inputs.pop("labels", None)
+        if relevance is None and self.dense_weight and model.training:
+            # Trainer strips columns absent from the model signature when
+            # `remove_unused_columns` is left on, which silently deletes the
+            # relevance and leaves a constant-zero dense term. Only a problem
+            # during training: the evaluation set carries no relevance by design,
+            # and `prediction_step` routes through here too.
+            raise ValueError(
+                "dense_weight > 0 but no 'relevance' in the training batch. Set "
+                "TrainingArguments(remove_unused_columns=False) so the collator's "
+                "extra column survives."
+            )
+        labels = inputs.pop("labels", None)
 
         outputs = model(**inputs)
         logits = outputs.logits
 
         loss = logits.sum() * 0.0
         if relevance is not None and self.dense_weight:
-            loss = loss + self.dense_weight * dense_soft_cross_entropy(logits, relevance.to(logits.dtype))
-        if self.sparse_weight and labels is not None:
-            loss = loss + self.sparse_weight * F.cross_entropy(logits, labels)
+            relevance = relevance.to(logits.dtype)
+            if self.loss_kind == "approx_ndcg":
+                dense_term = approx_ndcg_loss(logits, relevance, self.approx_ndcg_temperature)
+            else:
+                dense_term = dense_soft_cross_entropy(logits, relevance)
+            loss = loss + self.dense_weight * dense_term
+        if labels is not None and (self.sparse_weight or relevance is None):
+            # During evaluation there is no relevance, so the reported loss is the
+            # ordinary cross entropy and stays comparable across the sweep.
+            weight = self.sparse_weight if relevance is not None else 1.0
+            loss = loss + weight * F.cross_entropy(logits, labels)
 
         return (loss, outputs) if return_outputs else loss
 

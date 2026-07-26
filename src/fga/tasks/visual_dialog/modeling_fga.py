@@ -20,12 +20,16 @@ __all__ = [
     "FGAForVisualDialog",
     "FGAModelOutput",
     "FGAForVisualDialogOutput",
+    "MODALITY_NAMES",
     "UTILITY_NAMES",
 ]
 
-#: Utility order used everywhere in this file; it fixes the meaning of the
+#: Modality order used everywhere in this file; it fixes the meaning of the
 #: indices in `config.utility_sizes` and `config.sharing_factor_weights`.
-UTILITY_NAMES = FGAConfig.UTILITY_NAMES
+MODALITY_NAMES = FGAConfig.MODALITY_NAMES
+
+#: The paper's term for the same ordering.
+UTILITY_NAMES = MODALITY_NAMES
 
 
 @dataclass
@@ -33,23 +37,28 @@ class FGAModelOutput(ModelOutput):
     """Output of [`FGAModel`].
 
     Args:
-        pooled_utilities (`Dict[str, torch.FloatTensor]`):
-            One attended vector per utility, keyed by [`UTILITY_NAMES`], each
-            `(batch, utility_dim)`.
+        pooled_modalities (`Dict[str, torch.FloatTensor]`):
+            One attended vector per modality, keyed by [`MODALITY_NAMES`], each
+            `(batch, modality_dim)`. Alias: `pooled_utilities`.
         answer_states (`torch.FloatTensor` of shape `(batch, num_options, hidden_ans_dim)`):
             The final LSTM state of every candidate answer, i.e. the unattended
             representation each option is scored with.
         history_state (`torch.FloatTensor` of shape `(batch, num_history_rounds * hidden_hist_dim)`):
             Attended question/answer history, fused per round and flattened.
         attentions (`Tuple[torch.FloatTensor]`, *optional*):
-            Attention distribution per utility, in [`UTILITY_NAMES`] order.
+            Attention distribution per modality, in [`MODALITY_NAMES`] order.
             Returned when `output_attentions=True`.
     """
 
-    pooled_utilities: Optional[Dict[str, torch.FloatTensor]] = None
+    pooled_modalities: Optional[Dict[str, torch.FloatTensor]] = None
     answer_states: Optional[torch.FloatTensor] = None
     history_state: Optional[torch.FloatTensor] = None
     attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
+
+    @property
+    def pooled_utilities(self) -> Optional[Dict[str, torch.FloatTensor]]:
+        """The paper's name for [`pooled_modalities`]."""
+        return self.pooled_modalities
 
 
 @dataclass
@@ -119,7 +128,7 @@ class FGAPreTrainedModel(PreTrainedModel):
 
 
 class FGAModel(FGAPreTrainedModel):
-    """Factor-graph attention over the six Visual Dialog utilities.
+    """Factor-graph attention over the six Visual Dialog modalities.
 
     Returns the attended representation of each modality without scoring any
     answer, so it can be reused for other tasks (the same backbone has been
@@ -160,7 +169,7 @@ class FGAModel(FGAPreTrainedModel):
             use_pairwise=config.use_pairwise,
             use_unary=config.use_unary,
             use_self=config.use_self,
-            modality_names=UTILITY_NAMES,
+            modality_names=MODALITY_NAMES,
             size_force=config.size_force,
             unary_dropout=config.unary_dropout,
             legacy_unary_dropout=config.legacy_unary_dropout,
@@ -268,7 +277,7 @@ class FGAModel(FGAPreTrainedModel):
                 None,  # history answer
             ]
 
-        utilities = [
+        modalities = [
             answer_states,
             question_states,
             caption_states,
@@ -277,7 +286,7 @@ class FGAModel(FGAPreTrainedModel):
             history_answer_states,
         ]
 
-        attended = self.mul_atten(utilities, priors=priors if self.config.use_prior else None, return_weights=True)
+        attended = self.mul_atten(modalities, priors=priors if self.config.use_prior else None, return_weights=True)
         attended, weights = attended if output_attentions else (attended[0], None)
         (
             answer_atten,
@@ -288,7 +297,7 @@ class FGAModel(FGAPreTrainedModel):
             history_answer_atten,
         ) = attended
 
-        # Fuse the two history utilities round by round, then flatten the rounds.
+        # Fuse the two history modalities round by round, then flatten the rounds.
         history_state = self.qahistnet(torch.cat((history_question_atten, history_answer_atten), 1))
         history_state = history_state.view(batch_size, num_history_rounds * self.config.hidden_hist_dim)
 
@@ -306,7 +315,7 @@ class FGAModel(FGAPreTrainedModel):
             return output + (tuple(weights),) if weights is not None else output
 
         return FGAModelOutput(
-            pooled_utilities=pooled,
+            pooled_modalities=pooled,
             answer_states=answer_states,
             history_state=history_state,
             attentions=tuple(weights) if weights is not None else None,
@@ -400,7 +409,7 @@ class FGAForVisualDialog(FGAPreTrainedModel):
         )
 
         batch_size, num_options = outputs.answer_states.shape[:2]
-        pooled = outputs.pooled_utilities
+        pooled = outputs.pooled_modalities
 
         def broadcast(tensor: torch.Tensor) -> torch.Tensor:
             return tensor.unsqueeze(1).expand(batch_size, num_options, tensor.size(-1))

@@ -107,7 +107,7 @@ def test_config_rejects_both_spellings_at_once():
 
 
 def test_config_rejects_an_unknown_utility_name():
-    with pytest.raises(ValueError, match="Unknown utility"):
+    with pytest.raises(ValueError, match="Unknown modality"):
         FGAConfig(shared_utilities=[{"name": "nonsense", "repeats": 2, "connected_to": ["answer"]}])
 
 
