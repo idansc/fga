@@ -1,34 +1,70 @@
-"""Factor Graph Attention -- a general multimodal attention module.
+"""Factor Graph Attention — a general multimodal attention layer.
 
 Reference implementation of "Factor Graph Attention" (Schwartz, Yu, Hazan and
-Schwing, CVPR 2019), https://arxiv.org/abs/1904.05880, exposed through the
-standard HuggingFace `transformers` interfaces.
+Schwing, CVPR 2019), https://arxiv.org/abs/1904.05880.
+
+The package is in two halves. [`fga.attention`] is the general layer: it attends
+over any set of *utilities* — words, image regions, video frames, candidate
+answers — and carries no assumptions about a task. It is used like any other
+`torch.nn` module:
 
 ```python
-from fga import FGAConfig, FGAForVisualDialog
+from fga import FactorGraphAttention
 
-model = FGAForVisualDialog(FGAConfig())
-model.save_pretrained("my-fga")
-model = FGAForVisualDialog.from_pretrained("my-fga")
+attention = FactorGraphAttention(embed_dims=[512, 2048], num_entities=[20, 36])
+pooled_text, pooled_image = attention(text, image)
+```
+
+[`fga.tasks.visual_dialog`] is the worked application the paper reports, exposed
+through the standard `transformers` interfaces:
+
+```python
+from fga import FGAForVisualDialog
+
+model = FGAForVisualDialog.from_pretrained("Idan/fga")
 ```
 """
 
-from .attention import Atten, NaiveAttention, Pairwise, Unary, Utility
-from .configuration_fga import FGAConfig
-from .data import VisDialCollator, VisDialDataset, load_visdial_params, vocab_size_from_params
-from .encoders import FGATextEncoder, LSTMTextEncoder, build_text_encoder, register_text_encoder
-from .metrics import ndcg, scores_to_ranks, sparse_metrics
-from .modeling_fga import (
+from .attention import (
+    Atten,
+    FactorGraphAttention,
+    Modality,
+    NaiveAttention,
+    Pairwise,
+    Unary,
+    Utility,
+)
+from .tasks.visual_dialog import (
+    FGAConfig,
     FGAForVisualDialog,
     FGAForVisualDialogOutput,
     FGAModel,
     FGAModelOutput,
+    FGATextEncoder,
+    LSTMTextEncoder,
+    VisDialCollator,
+    VisDialDataset,
+    build_text_encoder,
+    load_visdial_params,
+    ndcg,
+    register_text_encoder,
+    scores_to_ranks,
+    sparse_metrics,
+    vocab_size_from_params,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = [
+    # the general layer
     "Atten",
+    "FactorGraphAttention",
+    "NaiveAttention",
+    "Modality",
+    "Pairwise",
+    "Unary",
+    "Utility",
+    # the visual dialog application
     "FGAConfig",
     "FGAForVisualDialog",
     "FGAForVisualDialogOutput",
@@ -36,10 +72,6 @@ __all__ = [
     "FGAModelOutput",
     "FGATextEncoder",
     "LSTMTextEncoder",
-    "NaiveAttention",
-    "Pairwise",
-    "Unary",
-    "Utility",
     "VisDialCollator",
     "VisDialDataset",
     "build_text_encoder",
