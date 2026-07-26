@@ -86,21 +86,32 @@ def upload_dataset(api, repo_id: str, data_dir: str, private: bool, dry_run: boo
     print(f"\nhttps://huggingface.co/datasets/{repo_id}")
 
 
-def upload_model(api, repo_id: str, private: bool, dry_run: bool) -> None:
-    """Publish the architecture and card. Deliberately uploads no weights."""
+def upload_model(api, repo_id: str, model_dir: str, private: bool, dry_run: bool) -> None:
+    """Publish a trained model directory: weights, config and card.
+
+    `model_dir` should be what `save_pretrained` produced — `model.safetensors`
+    plus `config.json` — with the card copied alongside. Trainer checkpoints also
+    carry `optimizer.pt` and RNG state, which are training-resumption artefacts
+    and are deliberately not published.
+    """
     from huggingface_hub import CommitOperationAdd
 
-    from fga import FGAConfig
+    required = ["config.json", "model.safetensors"]
+    missing = [name for name in required if not os.path.exists(os.path.join(model_dir, name))]
+    if missing:
+        raise SystemExit(f"{model_dir} is missing {missing}; point --model_dir at a save_pretrained output.")
 
-    config = FGAConfig(vocab_size=11322, hidden_img_dim=2048)
-    config_json = os.path.join(HUB_DIR, "model", "config.json")
-    config.to_json_file(config_json)
+    card = os.path.join(model_dir, "README.md")
+    if not os.path.exists(card):
+        card = os.path.join(HUB_DIR, "model", "README.md")
 
-    card = os.path.join(HUB_DIR, "model", "README.md")
+    operations = [CommitOperationAdd("README.md", card)]
+    operations += [CommitOperationAdd(name, os.path.join(model_dir, name)) for name in required]
+
     print(f"Model repo: {repo_id} ({'private' if private else 'PUBLIC'})")
-    print("  README.md")
-    print("  config.json")
-    print("  NOTE: no weights are uploaded; none exist. The card says so explicitly.")
+    for op in operations:
+        size = os.path.getsize(op.path_or_fileobj)
+        print(f"  {op.path_in_repo:<24} {human(size):>9}")
     if dry_run:
         print("\n--dry-run: nothing uploaded.")
         return
@@ -109,11 +120,8 @@ def upload_model(api, repo_id: str, private: bool, dry_run: bool) -> None:
     api.create_commit(
         repo_id=repo_id,
         repo_type="model",
-        operations=[
-            CommitOperationAdd("README.md", card),
-            CommitOperationAdd("config.json", config_json),
-        ],
-        commit_message="Add Factor Graph Attention architecture and model card",
+        operations=operations,
+        commit_message="Add Factor Graph Attention weights (VisDial v1.0, MRR 66.01)",
     )
     print(f"\nhttps://huggingface.co/{repo_id}")
 
@@ -124,6 +132,11 @@ def main():
     parser.add_argument("--dataset_repo", default="idansc/visdial-fga-preprocessed")
     parser.add_argument("--model_repo", default="idansc/fga")
     parser.add_argument("--data_dir", default="data")
+    parser.add_argument(
+        "--model_dir",
+        default="hub/model",
+        help="save_pretrained output to publish: config.json + model.safetensors (+ README.md).",
+    )
     parser.add_argument("--public", action="store_true", help="Create the repo public rather than private.")
     parser.add_argument("--dry-run", action="store_true", help="List what would be uploaded and stop.")
     args = parser.parse_args()
@@ -143,7 +156,7 @@ def main():
         upload_dataset(api, args.dataset_repo, args.data_dir, private, args.dry_run)
     if args.what in ("model", "both"):
         print()
-        upload_model(api, args.model_repo, private, args.dry_run)
+        upload_model(api, args.model_repo, args.model_dir, private, args.dry_run)
 
 
 if __name__ == "__main__":
