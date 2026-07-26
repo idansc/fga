@@ -478,6 +478,20 @@ differ sharply:
 python scripts/ensemble_eval.py --models models/fga-seed*/checkpoint-* --combine score rank
 ```
 
+Five models trained from different seeds, evaluated on VisDial v1.0 val:
+
+| | NDCG | MRR | R@1 | R@5 | R@10 | Mean rank |
+| --- | --- | --- | --- | --- | --- | --- |
+| best single member | 56.07 | 65.46 | 51.76 | 82.51 | 90.47 | 4.01 |
+| **5×FGA, score-averaged** | 60.86 | **68.43** | **55.26** | 85.06 | 92.52 | 3.47 |
+| 5×FGA, rank-averaged | 60.82 | 67.37 | 53.90 | 84.07 | 92.11 | 3.56 |
+
+against the published 5×FGA at MRR 69 and R@1 56%. Averaging scores beats averaging
+ranks here, which is what you would expect from five members of one architecture: their
+scores are already on a comparable scale, so the rank transform only discards magnitude.
+Ranks earn their place when the members disagree in confidence — mixing an MRR model
+with a dense-finetuned one, whose distributions differ sharply.
+
 The two metrics disagreeing is the subject of the
 [2020 challenge submission](https://github.com/idansc/mrr-ndcg).
 

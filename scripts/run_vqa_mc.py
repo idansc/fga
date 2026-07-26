@@ -45,6 +45,8 @@ class Arguments:
     pooling_dim: int = field(default=16000)
     use_ternary: bool = field(default=True)
     mask_padding: bool = field(default=True, metadata={"help": "Keep attention off padded words and slots."})
+    dropout: float = field(default=0.5, metadata={"help": "Encoder dropout."})
+    classifier_dropout: float = field(default=0.3, metadata={"help": "Dropout before the answer classifier."})
     features_in_memory: bool = field(default=True, metadata={"help": "~18 GB as float16."})
     normalize_features: bool = field(default=True, metadata={"help": "L2-normalize each region."})
     max_eval_questions: Optional[int] = field(default=None)
@@ -98,6 +100,8 @@ def main():
                 pooling_dim=args.pooling_dim,
                 use_ternary=args.use_ternary,
                 mask_padding=args.mask_padding,
+                dropout=args.dropout,
+                classifier_dropout=args.classifier_dropout,
             )
         )
     logger.info(f"params: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
