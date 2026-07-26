@@ -141,7 +141,7 @@ class FactorGraphAttention(nn.Module):
         if len(self.modality_names) != self.n_modalities:
             raise ValueError(f"Got {len(self.modality_names)} modality_names for {self.n_modalities} modalities.")
 
-        # Set by `from_modalities` when modalities are tied into shared-weight
+        # Set by `from_modalities` when modalities are grouped into shared-weight
         # groups; `None` means the caller passes one tensor per internal entry.
         self._plan: Optional[ModalityPlan] = None
 
@@ -203,7 +203,7 @@ class FactorGraphAttention(nn.Module):
     def from_modalities(
         cls,
         modalities: Sequence[Modality],
-        tied_weights: Optional[Sequence[Sequence[str]]] = None,
+        share_weights: Optional[Sequence[Sequence[str]]] = None,
         **kwargs,
     ) -> "FactorGraphAttention":
         """Build from named [`Modality`] specs instead of parallel index-aligned lists.
@@ -222,7 +222,7 @@ class FactorGraphAttention(nn.Module):
 
         Any remaining keyword arguments go to [`FactorGraphAttention`].
         """
-        plan = plan_modalities(modalities, tied_weights)
+        plan = plan_modalities(modalities, share_weights)
         module = cls(
             embed_dims=list(plan.embed_dims),
             num_entities=list(plan.num_entities),
@@ -318,7 +318,7 @@ class FactorGraphAttention(nn.Module):
 
         plan = self._plan
         if plan is not None and not plan.is_trivial and len(modalities) == len(plan.names):
-            # The caller passes one tensor per *modality*; tied modalities share a
+            # The caller passes one tensor per *modality*; modalities sharing weights use a
             # single set of weights, so their tensors are merged into one entry.
             # The shared factors index rows as batch-major, repeat-minor -- the same
             # order `expand(batch, repeats, ...).view(batch * repeats, ...)` produces --
@@ -346,7 +346,7 @@ class FactorGraphAttention(nn.Module):
             result = self._attend(modalities, priors, return_weights)
             attention, weights = result if return_weights else (result, None)
 
-            # Split the tied entries back out, in the caller's modality order.
+            # Split the shared entries back out, in the caller's modality order.
             per_modality: List[Optional[torch.Tensor]] = [None] * len(plan.names)
             per_modality_weights: List[Optional[torch.Tensor]] = [None] * len(plan.names)
             for entry, group in enumerate(plan.groups):
@@ -370,7 +370,7 @@ class FactorGraphAttention(nn.Module):
         return self._attend(modalities, priors, return_weights)
 
     def _attend(self, modalities, priors, return_weights: bool):
-        """Attend over one tensor per internal entry, tied groups already merged."""
+        """Attend over one tensor per internal entry, shared groups already merged."""
         if self.n_modalities != len(modalities):
             raise ValueError(
                 f"{type(self).__name__} was built for {self.n_modalities} utilities "
