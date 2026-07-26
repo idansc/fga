@@ -216,12 +216,20 @@ attention differently —
   model has decided what to look at within each;
 * **retrieval** declares no entity counts, so the pairwise factors
   mean-marginalize and clip/word counts may vary per example;
-* **navigation** carries a recurrent state across an episode, and its attention
-  over the observation grid *is* the map of where the agent is looking.
+* **navigation** carries a recurrent state across an episode and, uniquely here,
+  does *not* pool: the attention re-weights each grid cell and the whole map is
+  flattened into the recurrent state, because the agent must know where the
+  target is, not only that it is present.
 
-`visual_dialog` is the one the paper reports and the only one with trained
-weights. The others ship models and tests; their data pipelines and training loops
-are not included.
+`visual_dialog` and `vqa` are trained end to end on real data. The other three
+ship models and tests but no data pipeline — AVSD's features went with the same
+expired links as VisDial's, VideoMatch's were never published, and navigation
+needs the AI2-THOR simulator. For those, `scripts/functional_train.py` trains each
+on synthetic data with planted structure and checks the model recovers it on
+held-out examples: retrieval R@1 1.000 among 500 distractors, video dialog 1.000
+at identifying which of four streams matches the question, navigation 1.000 at
+acting toward the target's quadrant under REINFORCE. That certifies the wiring,
+not task accuracy.
 
 The naming used by those forks is accepted as-is, so this package is a drop-in:
 `util_e` / `sizes` for `embed_dims` / `num_entities`, `prior_flag` /

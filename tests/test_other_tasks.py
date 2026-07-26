@@ -199,3 +199,40 @@ def test_every_task_round_trips_through_save_pretrained(builder, tmp_path):
     reloaded = cls.from_pretrained(tmp_path)
     assert type(reloaded) is cls
     assert sum(p.numel() for p in reloaded.parameters()) == sum(p.numel() for p in model.parameters())
+
+
+def test_navigation_keeps_the_spatial_map_rather_than_pooling_it():
+    """The policy must know *where* the target is, not only that it is present.
+
+    The original flattens the attention-weighted grid into the recurrent input
+    (`poten * relu(state_embedding)`); pooling to one vector would discard the
+    position the agent has to move toward, which is the paper's whole point.
+    """
+    config = NavigationConfig(target_dim=16, observation_dim=32, grid_size=9, hidden_size=32)
+    policy = NavigationPolicy(config).eval()
+
+    with torch.no_grad():
+        out = policy(target_embeds=torch.randn(BATCH, 1, 16), observation=torch.randn(BATCH, 9, 32))
+
+    assert out.attended_grid.shape == (BATCH, config.grid_size, config.hidden_size)
+    # The recurrent layer consumes the whole map plus the pooled target.
+    assert policy.recurrent.input_size == config.grid_size * config.hidden_size + config.hidden_size
+
+
+def test_navigation_distinguishes_where_the_target_sits():
+    """The same content in two different cells must give different actions."""
+    torch.manual_seed(0)
+    config = NavigationConfig(target_dim=16, observation_dim=16, grid_size=9, hidden_size=16)
+    policy = NavigationPolicy(config).eval()
+
+    target = torch.randn(1, 1, 16)
+    base = torch.randn(1, 9, 16)
+
+    left, right = base.clone(), base.clone()
+    left[0, 0] += 3.0 * target[0, 0]
+    right[0, 8] += 3.0 * target[0, 0]
+
+    with torch.no_grad():
+        a = policy(target_embeds=target, observation=left).action_logits
+        b = policy(target_embeds=target, observation=right).action_logits
+    assert not torch.allclose(a, b, atol=1e-4)

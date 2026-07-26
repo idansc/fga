@@ -3,8 +3,14 @@
 An agent is told an object to find and must act from egocentric observations.
 
 Two modalities are attended jointly: the word embedding of the target object and
-the spatial grid of the current observation. The attended pair conditions a
-recurrent policy that emits an action distribution and a value estimate.
+the spatial grid of the current observation.
+
+The attention here is used differently from every other task in this package. The
+others pool each modality to a single vector; navigation must keep the *map*. The
+attention re-weights each grid cell and the whole weighted grid is flattened into
+the recurrent state, so the policy sees both what was found and where it is —
+pooling would discard the position the agent needs to move toward. The original
+writes this as `poten * relu(state_embedding)` flattened into the LSTM input.
 
 This use case differs from the others in what it does with the attention. There is
 no ranking or classification over candidates: the output is a policy, trained by
@@ -87,6 +93,9 @@ class NavigationOutput(ModelOutput):
             State-value estimate, for the critic.
         hidden_state (`Tuple[torch.FloatTensor, torch.FloatTensor]`):
             Recurrent state to carry into the next step of the episode.
+        attended_grid (`torch.FloatTensor` of shape `(batch, grid_size, hidden_size)`):
+            The observation with each cell scaled by its attention — the spatial
+            map the policy acts on, before flattening.
         pooled_modalities (`Dict[str, torch.FloatTensor]`, *optional*)
         attentions (`Tuple[torch.FloatTensor]`, *optional*):
             Attention over the target tokens and over the spatial grid — the
@@ -96,6 +105,7 @@ class NavigationOutput(ModelOutput):
 
     action_logits: Optional[torch.FloatTensor] = None
     value: Optional[torch.FloatTensor] = None
+    attended_grid: Optional[torch.FloatTensor] = None
     hidden_state: Optional[Tuple[torch.FloatTensor, torch.FloatTensor]] = None
     pooled_modalities: Optional[dict] = None
     attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
@@ -133,9 +143,10 @@ class NavigationPolicy(PreTrainedModel):
             modality_names=list(MODALITY_NAMES),
         )
 
-        # The episode is sequential, so the fused observation feeds a recurrent
-        # state rather than being classified directly.
-        self.recurrent = nn.LSTMCell(hidden * 2, hidden)
+        # The episode is sequential, so the attended map feeds a recurrent state.
+        # Its input is the flattened grid, not a pooled vector: the policy has to
+        # know where the target is, not only that it is present.
+        self.recurrent = nn.LSTMCell(config.grid_size * hidden + hidden, hidden)
         self.dropout = nn.Dropout(config.dropout)
         self.actor = nn.Linear(hidden, config.action_space)
         self.critic = nn.Linear(hidden, 1)
@@ -174,11 +185,13 @@ class NavigationPolicy(PreTrainedModel):
         target = self.target_projection(target_embeds)
         grid = self.observation_projection(observation.transpose(1, 2)).transpose(1, 2)
 
-        attended = self.attention(target, grid, return_weights=True)
-        attended, weights = attended if output_attentions else (attended[0], None)
+        attended, weights = self.attention(target, grid, return_weights=True)
         pooled_target, pooled_observation = attended
 
-        fused = torch.cat((pooled_target, pooled_observation), dim=-1)
+        # Scale each cell by its attention and keep the map; only the target,
+        # which has no spatial extent, is pooled.
+        attended_grid = weights[1].unsqueeze(-1) * grid
+        fused = torch.cat((attended_grid.flatten(1), pooled_target), dim=-1)
         hidden_state = self.recurrent(fused, hidden_state)
         state = self.dropout(hidden_state[0])
 
@@ -187,13 +200,14 @@ class NavigationPolicy(PreTrainedModel):
 
         pooled = dict(zip(MODALITY_NAMES, attended))
         if not return_dict:
-            output = (action_logits, value, hidden_state, pooled)
-            return output + ((tuple(weights),) if weights is not None else ())
+            output = (action_logits, value, hidden_state, attended_grid, pooled)
+            return output + ((tuple(weights),) if output_attentions else ())
 
         return NavigationOutput(
             action_logits=action_logits,
             value=value,
             hidden_state=hidden_state,
+            attended_grid=attended_grid,
             pooled_modalities=pooled,
-            attentions=tuple(weights) if weights is not None else None,
+            attentions=tuple(weights) if output_attentions else None,
         )
