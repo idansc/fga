@@ -1,22 +1,25 @@
 # Factor Graph Attention
 
-* A general multimodal attention approach inspired by probabilistic graphical models.
-* Achieves a state-of-the-art performance (MRR) on visual dialog task.
+A general multimodal attention approach inspired by probabilistic graphical
+models. Give it any number of modalities — words, image regions, video frames,
+candidate answers, dialog rounds — and it attends over all of them jointly.
 
-This repository is the official implementation of [Factor Graph Attention](https://arxiv.org/abs/1904.05880).
-(Appeared in CVPR'19)
+This repository is the official implementation of
+[Factor Graph Attention](https://arxiv.org/abs/1904.05880) (CVPR 2019). It
+achieves state-of-the-art performance (MRR) on the visual dialog task, and was
+part of the [2020 visual dialog challenge winning submission](https://github.com/idansc/mrr-ndcg).
 
 <p float="left">
   <img src="imgs/fga.png" height="40%" width="40%"/>
-  <img src="/imgs/model.png"" height="50%" width="50%"/>
+  <img src="imgs/model.png" height="50%" width="50%"/>
 </p>
 
-* Part of 2020 visual dialog challenge winning submission (https://github.com/idansc/mrr-ndcg)
-
-Use cases of FGA:
-* Video dialog, spatial interactions between frames, can be found here (https://github.com/idansc/simple-avsd)
-* Spatial navigation,  can be found here (https://github.com/barmayo/spatial_attention)
-* Video retrieval, between text query and clips, can be found here (https://github.com/AmeenAli/VideoMatch)
+**Contents** — [Installation](#installation) · [Quick start](#quick-start) ·
+[The attention layer](#the-attention-layer) · [Data](#data) ·
+[Training](#training) · [Evaluation](#evaluation) ·
+[Pre-trained models](#pre-trained-models) · [Results](#results) ·
+[Notes on this refactor](#notes-on-this-refactor) ·
+[Use cases of FGA](#use-cases-of-fga) · [Citation](#citation)
 
 ## Installation
 
@@ -78,6 +81,19 @@ shows the graph it realizes:
 FactorGraphAttention(modalities=[text:512, image:2048], factors=unary+self+pairwise)
 ```
 
+Two optional arguments to `forward`:
+
+```python
+pooled, weights = attention(text, image, masks=[text_ids != 0, None], return_weights=True)
+```
+
+`masks` marks which entities exist, so padded positions are excluded from the
+softmax — padding is not inert, since an encoder still emits a state there.
+`return_weights` returns the per-modality attention distributions, which is what
+you want for a visualization (`output_attentions=True` on the task models).
+
+### Declaring modalities by name
+
 Describe the graph by name rather than by parallel index-aligned lists, with each
 modality declared explicitly — the nine history rounds are nine modalities — and
 weight sharing stated separately:
@@ -113,9 +129,6 @@ names. A typo in either raises instead of silently building a different graph.
 The indexed spelling (`sharing_factor_weights={2: (9, [0, 1])}` with one packed
 `(batch * repeats, ...)` tensor) still works — it is what the paper's code and
 the published checkpoints use.
-
-To get the attention distributions for a visualization, pass
-`return_weights=True` (or `output_attentions=True` on the Visual Dialog model).
 
 ### Visual Question Answering, with a ternary factor
 
@@ -176,19 +189,29 @@ credits any answer given by at least three annotators and is graded in the same
 way the dense relevance is for Visual Dialog.
 
 Two notes on the port. The potentials follow **FGA's** conventions — L2-normalized
-embeddings, a batch-normalized interaction grid, convolutional marginalization —
-rather than the original's `tanh` and learned elementwise scaling. And the
-interaction tensor is `x*y*z` values per example (~53k at the VQA sizes), so it is
-affordable for three modalities but would not be for four.
+embeddings, a batch-normalized interaction grid, learned marginalization — rather
+than the original's `tanh` and learned elementwise scaling. And the interaction
+tensor is `x*y*z` values per example (~53k at the VQA sizes), so it is affordable
+for three modalities but would not be for four.
 
 The fusion head uses Compact Bilinear Pooling, implemented in
 `fga.tasks.vqa.pooling` via the Count Sketch and an FFT, which approximates the
 `d^2` outer product in `O(d + m log m)`.
 
-> The model and its tests are included; the VQA data pipeline is not — you will
-> need question/answer preprocessing and image features of your own.
+The data pipeline is included. `scripts/prepare_vqa.py` turns the official VQA v1
+release plus a directory of per-image region features into the files the dataset
+reads, and there is one training script per track:
 
-### The other use cases
+```bash
+python scripts/prepare_vqa.py --raw_dir vqa/raw --features_dir features --output_dir vqa
+python scripts/run_vqa_mc.py --vqa_dir vqa --output_dir models/vqa-mc \
+    --do_train --do_eval --num_train_epochs 8 --learning_rate 7e-4 --bf16
+```
+
+`vqa_accuracy` implements the official metric: the answer normalization, and the
+average over the ten leave-one-annotator-out subsets.
+
+### The other tasks in this package
 
 The published follow-up models are ported onto the same layer, one package each:
 
@@ -196,9 +219,9 @@ The published follow-up models are ported onto the same layer, one package each:
 | --- | --- | --- | --- |
 | `visual_dialog` | rank answers about an image | answers, question, caption, image, 2×history | ranking |
 | `vqa` | VQA, multiple-choice **or** open-ended | question, image, (answers) | classification |
-| `video_dialog` | [audio-visual scene-aware dialog](https://github.com/idansc/simple-avsd) | question, 4 video streams, audio | decoder state |
-| `video_retrieval` | [text-to-video retrieval](https://github.com/AmeenAli/VideoMatch) | clips, query words | contrastive score |
-| `navigation` | [target-driven navigation](https://github.com/barmayo/spatial_attention) | target object, observation grid | policy + value |
+| `video_dialog` | audio-visual scene-aware dialog | question, 4 video streams, audio | decoder state |
+| `video_retrieval` | text-to-video retrieval | clips, query words | contrastive score |
+| `navigation` | target-driven navigation | target object, observation grid | policy + value |
 
 ```python
 from fga.tasks.video_dialog import AVSDConfig, AVSDEncoder
@@ -230,6 +253,8 @@ held-out examples: retrieval R@1 1.000 among 500 distractors, video dialog 1.000
 at identifying which of four streams matches the question, navigation 1.000 at
 acting toward the target's quadrant under REINFORCE. That certifies the wiring,
 not task accuracy.
+
+### Compatibility with the forks
 
 The naming used by those forks is accepted as-is, so this package is a drop-in:
 `util_e` / `sizes` for `embed_dims` / `num_entities`, `prior_flag` /
@@ -283,6 +308,7 @@ They are, however, a convenient source of the **images** themselves
 re-extract the F-RCNN features.
 
 Pretrained image features:
+
 - **F-RCNN** — object detector with a ResNeXt-101 backbone, 37 proposals, fine-tuned on
   [Visual Genome](https://visualgenome.org/). *Achieves SOTA.* Recommended, mainly
   because it is finetuned on the relevant Visual Genome data.
@@ -327,7 +353,7 @@ python scripts/run_visual_dialog.py \
     --bf16 --seed 0
 ```
 
-Training runs on [`transformers.Trainer`], so mixed precision, gradient
+Training runs on `transformers.Trainer`, so mixed precision, gradient
 accumulation, checkpoint resumption, early stopping and W&B/TensorBoard logging
 are all available as standard flags. For multi-GPU, launch with
 `torchrun --nproc_per_node=N` — the script needs no changes.
@@ -356,6 +382,11 @@ python scripts/run_visual_dialog.py \
 
 ## Pre-trained models
 
+| Weights | What it is |
+| --- | --- |
+| [Idan/fga](https://huggingface.co/Idan/fga) | The epoch-5 checkpoint below — MRR 66.01 |
+| [Idan/fga-ndcg](https://huggingface.co/Idan/fga-ndcg) | Dense-finetuned — NDCG 69.07 |
+
 Original `.pth.tar` checkpoints convert to the HuggingFace format with:
 
 ```bash
@@ -372,12 +403,13 @@ converted checkpoint reproduces the original model's scores exactly.
 
 ## Results
 
-Evaluation is done on [VisDialv1.0](https://visualdialog.org/data).
+Evaluation is done on [VisDial v1.0](https://visualdialog.org/data), which
+contains 1 dialog with 10 question-answer pairs (starting from an image caption)
+on ~130k images from COCO-trainval and Flickr, totalling ~1.3 million
+question-answer pairs.
 
-VisDial v1.0 contains 1 dialog with 10 question-answer pairs (starting from an image caption) on ~130k images
-from COCO-trainval and Flickr, totalling ~1.3 million question-answer pairs.
-
-Our model achieves the following performance on the validation set, and similar results on test-std/test-challenge.
+Our model achieves the following performance on the validation set, and similar
+results on test-std/test-challenge.
 
 | Model name | R@1 | MRR |
 | --- | --- | --- |
@@ -402,8 +434,6 @@ MRR peaks at epoch 5 and matches the published 66; R@1 comes in 0.54 lower. NDCG
 climbing after MRR has turned over, which is the metric tension the
 [2020 challenge submission](https://github.com/idansc/mrr-ndcg) dealt with — checkpoints
 are saved every epoch so you can select per metric.
-
-Weights for the epoch-5 checkpoint: [Idan/fga](https://huggingface.co/Idan/fga).
 
 ### Optimizing NDCG instead
 
@@ -437,11 +467,9 @@ python scripts/finetune_dense.py \
     --learning_rate 1e-4 --num_train_epochs 5
 ```
 
-NDCG weights: [Idan/fga-ndcg](https://huggingface.co/Idan/fga-ndcg).
-
 ### Ensembling
 
-The paper reports 5xFGA alongside the single model. `scripts/ensemble_eval.py` combines
+The paper reports 5×FGA alongside the single model. `scripts/ensemble_eval.py` combines
 checkpoints by averaging either scores or ranks — the latter being scale-free, which
 matters when mixing an MRR model with a dense-finetuned one, whose score distributions
 differ sharply:
@@ -453,8 +481,8 @@ python scripts/ensemble_eval.py --models models/fga-seed*/checkpoint-* --combine
 The two metrics disagreeing is the subject of the
 [2020 challenge submission](https://github.com/idansc/mrr-ndcg).
 
-Note, the paper results may slightly vary from the results of this repo, since it is a refactored version.
-For the legacy version, please contact via email.
+Note, the paper results may slightly vary from the results of this repo, since it is a
+refactored version. For the legacy version, please contact via email.
 
 ## Notes on this refactor
 
@@ -478,15 +506,39 @@ corresponding untrained weights.
 Run the tests with `pytest`. The data tests skip automatically when
 `data/visdial_data.h5` is absent.
 
-## Contributing
+## Use cases of FGA
+
+* Video dialog, spatial interactions between frames, can be found here
+  (https://github.com/idansc/simple-avsd)
+* Spatial navigation, can be found here
+  (https://github.com/barmayo/spatial_attention)
+* Video retrieval, between text query and clips, can be found here
+  (https://github.com/AmeenAli/VideoMatch)
+
+Each is also ported onto this layer under `fga.tasks/` — see
+[The other tasks in this package](#the-other-tasks-in-this-package).
+
+## Citation
 
 Please cite Factor Graph Attention if you use this work in your research:
-```
+
+```bibtex
 @inproceedings{schwartz2019factor,
   title={Factor graph attention},
   author={Schwartz, Idan and Yu, Seunghak and Hazan, Tamir and Schwing, Alexander G},
   booktitle={Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition},
   pages={2039--2048},
   year={2019}
+}
+```
+
+If you use the ternary factor or the VQA model, please also cite:
+
+```bibtex
+@inproceedings{schwartz2017high,
+  title={High-Order Attention Models for Visual Question Answering},
+  author={Schwartz, Idan and Schwing, Alexander G and Hazan, Tamir},
+  booktitle={Advances in Neural Information Processing Systems},
+  year={2017}
 }
 ```
