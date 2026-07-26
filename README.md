@@ -46,43 +46,81 @@ model = FGAForVisualDialog.from_pretrained("models/fga")
 `AutoConfig` / `AutoModel` resolve `model_type="fga"` once `fga` has been
 imported, and `push_to_hub` / `from_pretrained("<user>/fga")` work as usual.
 
-## The attention block on its own
+## The attention layer
 
-The factor-graph attention is the reusable part of the paper and knows nothing
-about Visual Dialog — hand it any list of `(batch, num_entities, dim)` utilities:
+The package is in two halves:
+
+```
+fga.attention              the general layer — no task assumptions
+fga.tasks.visual_dialog    the application the paper reports
+```
+
+`fga.attention` is an ordinary `torch.nn` layer. A **modality** is any set of
+entities carrying an embedding each: words in a sentence, regions in an image,
+frames in a video, candidate answers, previous dialog rounds. (The paper calls
+these *utilities*; both names work throughout.)
 
 ```python
-from fga.attention import Atten
+import torch
+from fga import FactorGraphAttention
 
-attention = Atten(util_e=[512, 2048], sizes=[20, 36])
-pooled_text, pooled_image = attention([text_states, image_regions])
+attention = FactorGraphAttention(embed_dims=[512, 2048], num_entities=[20, 36])
+text  = torch.randn(8, 20, 512)
+image = torch.randn(8, 36, 2048)
+
+pooled_text, pooled_image = attention(text, image)   # (8, 512), (8, 2048)
+```
+
+It composes like any other layer — drop it in an `nn.Module`, and `print(model)`
+shows the graph it realizes:
+
+```
+FactorGraphAttention(modalities=[text:512, image:2048], factors=unary+self+pairwise)
 ```
 
 Describe the graph by name rather than by parallel index-aligned lists. These two
 are equivalent, but only one is readable:
 
 ```python
-# indexed: "utility 4 repeats 9 times and connects to utilities 0 and 1"
-Atten(util_e=[512, 512, 128], sizes=[100, 21, 21], sharing_factor_weights={2: (9, [0, 1])})
+# indexed: "modality 2 repeats 9 times and connects to modalities 0 and 1"
+FactorGraphAttention(embed_dims=[512, 512, 128], num_entities=[100, 21, 21],
+                     sharing_factor_weights={2: (9, [0, 1])})
 
 # named
-from fga.attention import Atten, Utility
+from fga import FactorGraphAttention, Modality
 
-attention = Atten.from_utilities([
-    Utility("answer",   dim=512, size=100),
-    Utility("question", dim=512, size=21),
-    Utility("history",  dim=128, size=21, repeats=9, connected_to=("answer", "question")),
+attention = FactorGraphAttention.from_modalities([
+    Modality("answer",   dim=512, size=100),
+    Modality("question", dim=512, size=21),
+    Modality("history",  dim=128, size=21, repeats=9, connected_to=("answer", "question")),
 ], use_prior=True)
 
 print(attention.describe())
 ```
 
-`repeats` is what the paper calls factor-weight sharing: the utility arrives as
-`(batch, repeats, entities, dim)` and one set of factor weights serves all
+`repeats` is what the paper calls factor-weight sharing: the modality arrives as
+`(batch * repeats, entities, dim)` and one set of factor weights serves all
 repeats, which is how nine history rounds stay affordable. `connected_to` is the
-efficiency constraint — a shared utility only interacts with the utilities it
-names. Both are validated, so a typo now raises instead of silently building a
-different graph.
+efficiency constraint — a shared modality only interacts with the ones it names.
+Both are validated, so a typo raises instead of silently building a different graph.
+
+To get the attention distributions for a visualization, pass
+`return_weights=True` (or `output_attentions=True` on the Visual Dialog model).
+
+### Other uses of FGA
+
+The layer is the reusable part of the paper, and has been applied well beyond
+Visual Dialog — [video dialog](https://github.com/idansc/simple-avsd),
+[spatial navigation](https://github.com/barmayo/spatial_attention) and
+[video retrieval](https://github.com/AmeenAli/VideoMatch). Those shapes are
+covered by tests in `tests/test_attention_layer.py`, none of which import the
+Visual Dialog package.
+
+The naming used by those forks is accepted as-is, so this package is a drop-in:
+`util_e` / `sizes` for `embed_dims` / `num_entities`, `prior_flag` /
+`pairwise_flag` / `unary_flag` / `self_flag` for the `use_*` arguments, `Utility`
+for `Modality`, and the AVSD spelling `high_order_utils=[(idx, repeats, connected)]`
+with `size_flag` for `sharing_factor_weights`.
 
 `FGAConfig` takes the same readable form:
 
@@ -94,13 +132,8 @@ FGAConfig(shared_utilities=[
 ```
 
 The indexed `sharing_factor_weights` stays the serialized field, so old configs
-and checkpoints keep loading, and `config.shared_utilities` renders it by name.
-The `prior_flag` / `pairwise_flag` / `unary_flag` / `self_flag` arguments are
-still accepted alongside the clearer `use_prior` / `use_pairwise` / `use_unary` /
-`use_self`.
-
-To get the attention distributions for a visualization, pass
-`output_attentions=True` (or `return_weights=True` to `Atten`).
+and published checkpoints keep loading, and `config.shared_utilities` renders it
+by name.
 
 ## Data
 

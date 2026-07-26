@@ -129,17 +129,27 @@ Pass `output_attentions=True` to get the per-utility attention distributions for
 visualization.
 
 The attention block is the reusable part of the paper and knows nothing about Visual
-Dialog — give it any set of utilities:
+Dialog — it is an ordinary `torch.nn` layer over any set of modalities:
 
 ```python
-from fga.attention import Atten, Utility
+from fga import FactorGraphAttention, Modality
 
-attention = Atten.from_utilities([
-    Utility("text",    dim=512,  size=20),
-    Utility("image",   dim=2048, size=36),
-    Utility("history", dim=128,  size=21, repeats=9, connected_to=("text", "image")),
+attention = FactorGraphAttention(embed_dims=[512, 2048], num_entities=[20, 36])
+pooled_text, pooled_image = attention(text, image)
+
+# or declared by name, with a repeated modality sharing factor weights
+attention = FactorGraphAttention.from_modalities([
+    Modality("text",    dim=512,  size=20),
+    Modality("image",   dim=2048, size=36),
+    Modality("history", dim=128,  size=21, repeats=9, connected_to=("text", "image")),
 ], use_prior=True)
 ```
+
+The same layer backs the paper's follow-ups in
+[video dialog](https://github.com/idansc/simple-avsd),
+[spatial navigation](https://github.com/barmayo/spatial_attention) and
+[video retrieval](https://github.com/AmeenAli/VideoMatch); their argument names
+(`util_e`, `sizes`, `high_order_utils`, `*_flag`) are all still accepted.
 
 ## Data
 
