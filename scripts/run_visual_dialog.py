@@ -59,10 +59,6 @@ class ModelArguments:
     hidden_cap_dim: int = field(default=128, metadata={"help": "Caption LSTM hidden size."})
     initializer_type: str = field(default="he", metadata={"help": "he | xavier | default."})
     lstm_initializer_type: str = field(default="he", metadata={"help": "he | xavier | default."})
-    legacy_unary_dropout: bool = field(
-        default=False,
-        metadata={"help": "Reproduce the original release, which kept unary dropout on at eval time."},
-    )
 
 
 @dataclass
@@ -163,7 +159,6 @@ def main():
             },
             initializer_type=model_args.initializer_type,
             lstm_initializer_type=model_args.lstm_initializer_type,
-            legacy_unary_dropout=model_args.legacy_unary_dropout,
         )
         model = FGAForVisualDialog(config)
     logger.info(f"Total params: {sum(p.numel() for p in model.parameters()):,}")

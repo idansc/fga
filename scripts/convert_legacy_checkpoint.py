@@ -99,11 +99,6 @@ def main():
     parser.add_argument("--trunc_length", type=int, default=20, help="Question/answer truncation length")
     parser.add_argument("--caption_length", type=int, default=40, help="Caption truncation length")
     parser.add_argument("--num_history_rounds", type=int, default=9)
-    parser.add_argument(
-        "--legacy_unary_dropout",
-        action="store_true",
-        help="Keep unary dropout active at eval, exactly reproducing the original numbers.",
-    )
     parser.add_argument("--push_to_hub", default=None, help="Optional Hub repo id to push to, e.g. 'idansc/fga'.")
     args = parser.parse_args()
 
@@ -154,7 +149,6 @@ def main():
             4: (args.num_history_rounds, [0, 1]),
             5: (args.num_history_rounds, [0, 1]),
         },
-        legacy_unary_dropout=args.legacy_unary_dropout,
         initializer_type=from_legacy("initialization", "he") or "he",
         lstm_initializer_type=from_legacy("lstm_initialization", "he") or "he",
     )

@@ -94,11 +94,6 @@ class FGAConfig(PretrainedConfig):
             Only `"lstm"` -- the encoder used in the paper -- ships with this
             repo; the value exists so alternative encoders can be registered
             without changing the checkpoint format.
-        legacy_unary_dropout (`bool`, *optional*, defaults to `False`):
-            Reproduce a quirk of the original release, where the unary potential
-            called `F.dropout` without passing `self.training` and therefore kept
-            dropping activations at evaluation time. Set to `True` only to match
-            the numbers of the originally released checkpoint exactly.
         initializer_type (`str`, *optional*, defaults to `"he"`):
             Initialization for non-LSTM weights: `"he"`, `"xavier"` or `"default"`.
         lstm_initializer_type (`str`, *optional*, defaults to `"he"`):
@@ -133,7 +128,6 @@ class FGAConfig(PretrainedConfig):
         unary_dropout: float = 0.5,
         classifier_dropout: float = 0.5,
         text_encoder_type: str = "lstm",
-        legacy_unary_dropout: bool = False,
         initializer_type: str = "he",
         lstm_initializer_type: str = "he",
         **kwargs,
@@ -172,7 +166,6 @@ class FGAConfig(PretrainedConfig):
         self.unary_dropout = unary_dropout
         self.classifier_dropout = classifier_dropout
         self.text_encoder_type = text_encoder_type
-        self.legacy_unary_dropout = legacy_unary_dropout
         self.initializer_type = initializer_type
         self.lstm_initializer_type = lstm_initializer_type
 

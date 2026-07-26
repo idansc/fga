@@ -94,22 +94,13 @@ def test_padding_embedding_row_is_zero(tiny_config):
     assert torch.all(embeddings.weight[embeddings.padding_idx] == 0)
 
 
-def test_eval_is_deterministic_by_default(tiny_config, tiny_batch):
-    """Dropout must be off at eval -- the original code left the unary one on."""
+def test_eval_is_deterministic(tiny_config, tiny_batch):
+    """Dropout must be off at eval; the original code left the unary one on."""
     model = FGAForVisualDialog(tiny_config).eval()
     with torch.no_grad():
         first = model(**tiny_batch).logits
         second = model(**tiny_batch).logits
     torch.testing.assert_close(first, second)
-
-
-def test_legacy_unary_dropout_reproduces_stochastic_eval(tiny_config, tiny_batch):
-    tiny_config.legacy_unary_dropout = True
-    model = FGAForVisualDialog(tiny_config).eval()
-    with torch.no_grad():
-        first = model(**tiny_batch).logits
-        second = model(**tiny_batch).logits
-    assert not torch.allclose(first, second)
 
 
 def test_lengths_beyond_the_sequence_do_not_index_out_of_bounds(tiny_config, tiny_batch):

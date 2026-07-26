@@ -398,8 +398,7 @@ change behaviour:
 
 * **Unary dropout at evaluation.** The original called `F.dropout(...)` without
   forwarding `self.training`, so activations were dropped during evaluation and
-  scores were non-deterministic. Set `legacy_unary_dropout=True` on the config to
-  reproduce the old numbers exactly.
+  scores were non-deterministic even under `model.eval()`.
 * **Padding embedding.** The padding row was randomly initialized and, because
   `padding_idx` zeroes its gradient, stayed random. It is now zero.
 * **Option lengths without `--astop`.** That branch indexed the answer-length

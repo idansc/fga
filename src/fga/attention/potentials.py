@@ -56,17 +56,13 @@ class Unary(nn.Module):
     Args:
         embed_size: embedding dimension of the modality.
         dropout: dropout probability applied to the hidden activation.
-        legacy_dropout: if `True`, keep dropping activations at evaluation time,
-            reproducing the behaviour of the original release (which called
-            `F.dropout` without forwarding `self.training`).
     """
 
-    def __init__(self, embed_size: int, dropout: float = 0.5, legacy_dropout: bool = False):
+    def __init__(self, embed_size: int, dropout: float = 0.5):
         super().__init__()
         self.embed = nn.Conv1d(embed_size, embed_size, 1)
         self.feature_reduce = nn.Conv1d(embed_size, 1, 1)
         self.dropout = dropout
-        self.legacy_dropout = legacy_dropout
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         """Args: X of shape `(batch, num_entities, embed_size)`.
@@ -75,11 +71,7 @@ class Unary(nn.Module):
         """
         X = X.transpose(1, 2)
         X_embed = conv1x1(X, self.embed)
-        X_nl_embed = F.dropout(
-            F.relu(X_embed),
-            p=self.dropout,
-            training=True if self.legacy_dropout else self.training,
-        )
+        X_nl_embed = F.dropout(F.relu(X_embed), p=self.dropout, training=self.training)
         X_poten = conv1x1(X_nl_embed, self.feature_reduce)
         return X_poten.squeeze(1)
 

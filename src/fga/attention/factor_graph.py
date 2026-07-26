@@ -76,8 +76,6 @@ class FactorGraphAttention(nn.Module):
         use_unary: use local information. Alias: `unary_flag`.
         use_self: use interactions among entities of the same modality. Alias: `self_flag`.
         unary_dropout: dropout inside the unary potential.
-        legacy_unary_dropout: keep unary dropout active at evaluation time,
-            reproducing the original release.
         modality_names: optional labels, set for you by [`FactorGraphAttention.from_modalities`].
     """
 
@@ -92,7 +90,6 @@ class FactorGraphAttention(nn.Module):
         use_unary: bool = True,
         use_self: bool = True,
         unary_dropout: float = 0.5,
-        legacy_unary_dropout: bool = False,
         modality_names: Optional[Sequence[str]] = None,
         ternary_interactions: Optional[Sequence[Sequence[int]]] = None,
         *,
@@ -161,7 +158,7 @@ class FactorGraphAttention(nn.Module):
         self.sharing_factor_weights = dict(sharing_factor_weights or {})
 
         for idx, e_dim in enumerate(util_e):
-            self.un_models.append(Unary(e_dim, unary_dropout, legacy_unary_dropout))
+            self.un_models.append(Unary(e_dim, unary_dropout))
             if self.size_force:
                 self.spatial_pool[str(idx)] = nn.AdaptiveAvgPool1d(sizes[idx])
 
