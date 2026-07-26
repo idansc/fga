@@ -159,14 +159,40 @@ The fusion head uses Compact Bilinear Pooling, implemented in
 > The model and its tests are included; the VQA data pipeline is not — you will
 > need question/answer preprocessing and image features of your own.
 
-### Other uses of FGA
+### The other use cases
 
-The layer is the reusable part of the paper, and has been applied well beyond
-Visual Dialog — [video dialog](https://github.com/idansc/simple-avsd),
-[spatial navigation](https://github.com/barmayo/spatial_attention) and
-[video retrieval](https://github.com/AmeenAli/VideoMatch). Those shapes are
-covered by tests in `tests/test_attention_layer.py`, none of which import the
-Visual Dialog package.
+The published follow-up models are ported onto the same layer, one package each:
+
+| package | task | modalities | output |
+| --- | --- | --- | --- |
+| `visual_dialog` | rank answers about an image | answers, question, caption, image, 2×history | ranking |
+| `vqa` | multiple-choice VQA | question, image, answers | classification |
+| `video_dialog` | [audio-visual scene-aware dialog](https://github.com/idansc/simple-avsd) | question, 4 video streams, audio | decoder state |
+| `video_retrieval` | [text-to-video retrieval](https://github.com/AmeenAli/VideoMatch) | clips, query words | contrastive score |
+| `navigation` | [target-driven navigation](https://github.com/barmayo/spatial_attention) | target object, observation grid | policy + value |
+
+```python
+from fga.tasks.video_dialog import AVSDConfig, AVSDEncoder
+from fga.tasks.video_retrieval import VideoMatchConfig, VideoMatchModel
+from fga.tasks.navigation import NavigationConfig, NavigationPolicy
+```
+
+They differ in more than their inputs, which is the point: Visual Dialog and VQA
+rank or classify, retrieval trains contrastively with no classifier at all, and
+navigation emits a policy for reinforcement learning. Each exercises the same
+attention differently —
+
+* **video dialog** attends four spatio-temporal streams separately, then fuses
+  them with an LSTM over the stream axis, so moments can be compared after the
+  model has decided what to look at within each;
+* **retrieval** declares no entity counts, so the pairwise factors
+  mean-marginalize and clip/word counts may vary per example;
+* **navigation** carries a recurrent state across an episode, and its attention
+  over the observation grid *is* the map of where the agent is looking.
+
+`visual_dialog` is the one the paper reports and the only one with trained
+weights. The others ship models and tests; their data pipelines and training loops
+are not included.
 
 The naming used by those forks is accepted as-is, so this package is a drop-in:
 `util_e` / `sizes` for `embed_dims` / `num_entities`, `prior_flag` /
