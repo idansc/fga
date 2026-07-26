@@ -44,6 +44,7 @@ class Arguments:
     hidden_size: int = field(default=512)
     pooling_dim: int = field(default=16000)
     use_ternary: bool = field(default=True)
+    mask_padding: bool = field(default=True, metadata={"help": "Keep attention off padded words and slots."})
     features_in_memory: bool = field(default=True, metadata={"help": "~18 GB as float16."})
     normalize_features: bool = field(default=True, metadata={"help": "L2-normalize each region."})
     max_eval_questions: Optional[int] = field(default=None)
@@ -96,6 +97,7 @@ def main():
                 num_choices=eval_dataset.choices.shape[1],
                 pooling_dim=args.pooling_dim,
                 use_ternary=args.use_ternary,
+                mask_padding=args.mask_padding,
             )
         )
     logger.info(f"params: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")

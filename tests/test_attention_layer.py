@@ -359,3 +359,49 @@ def test_all_padding_row_stays_finite():
 
     assert torch.isfinite(weights[0]).all() and torch.isfinite(pooled[0]).all()
     torch.testing.assert_close(weights[0][1].sum(), torch.tensor(1.0))
+
+
+def test_zero_rows_collect_exactly_no_gradient():
+    """A masked entity embeds to exactly zero, and must take no gradient at all.
+
+    Finite is not enough. `F.normalize` gives NaN here, and folding the epsilon
+    under the square root gives `1/sqrt(eps)` = 1e6 -- finite, but it overflows
+    bf16 downstream, and the moment a mask multiplies that `inf` by zero it is
+    NaN again. A zero vector has no direction, so the scale must be zero.
+    """
+    from fga.attention.potentials import l2_normalize
+
+    x = torch.zeros(2, 3, 8, requires_grad=True)
+    l2_normalize(x).sum().backward()
+    torch.testing.assert_close(x.grad, torch.zeros_like(x))
+
+    # Mixed rows: only the zero one is neutralized.
+    y = torch.randn(1, 3, 8)
+    y[0, 1] = 0.0
+    y.requires_grad_(True)
+    l2_normalize(y).sum().backward()
+    torch.testing.assert_close(y.grad[0, 1], torch.zeros(8))
+    assert y.grad[0, 0].abs().sum() > 0
+
+    # And it agrees with F.normalize wherever that is well defined.
+    z = torch.randn(4, 5, 16)
+    torch.testing.assert_close(l2_normalize(z), torch.nn.functional.normalize(z, dim=-1))
+
+
+def test_masked_attention_has_finite_gradients():
+    """The end-to-end case: zeroed padded states, a mask, and a backward pass."""
+    attention = FactorGraphAttention(embed_dims=[8, 16], num_entities=[5, 6])
+    mask = torch.tensor([[True, True, True, False, False]] * 3)
+
+    text = torch.randn(3, 5, 8, requires_grad=True)
+    image = torch.randn(3, 6, 16, requires_grad=True)
+    # Padded positions carry no state at all, as a mask-zero encoder leaves them.
+    masked_text = text * mask.unsqueeze(-1)
+
+    pooled = attention(masked_text, image, masks=[mask, None])
+    (pooled[0].sum() + pooled[1].sum()).backward()
+
+    assert torch.isfinite(text.grad).all()
+    assert torch.isfinite(image.grad).all()
+    for name, parameter in attention.named_parameters():
+        assert parameter.grad is None or torch.isfinite(parameter.grad).all(), name

@@ -16,7 +16,36 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__all__ = ["Unary", "Pairwise", "Ternary", "self_key", "pair_key", "tri_key"]
+__all__ = ["Unary", "Pairwise", "Ternary", "l2_normalize", "self_key", "pair_key", "tri_key"]
+
+
+def l2_normalize(x: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    """Scale each row to unit length, with a gradient that survives a zero row.
+
+    `F.normalize` divides by `max(||x||, eps)`, which is finite in the forward
+    pass but differentiates `||x||` -- and `d||x||/dx = x/||x||` is `0/0` at the
+    origin, so a zero row poisons the whole backward pass with NaN. Zero rows are
+    ordinary here: a masked-out entity has no embedding, and a projection whose
+    bias is initialized to zero maps it to exactly zero.
+
+    Folding the epsilon under the square root keeps the value finite, but the
+    derivative there is still `1/sqrt(eps)` -- 1e6 at the default -- which
+    overflows bf16 downstream and then turns into NaN the moment a mask
+    multiplies it by zero. A zero row has no direction, and a masked entity
+    should collect no gradient at all, so those rows are given a scale of exactly
+    zero instead: `torch.where` routes the backward pass to the constant branch,
+    and no gradient reaches `x`.
+
+    For any row that is not essentially zero this is `F.normalize` to within
+    float32 resolution.
+    """
+    norm_squared = x.pow(2).sum(dim=-1, keepdim=True)
+    scale = torch.where(
+        norm_squared > eps,
+        torch.rsqrt(norm_squared.clamp_min(eps)),
+        torch.zeros_like(norm_squared),
+    )
+    return x * scale
 
 
 class Unary(nn.Module):
@@ -94,8 +123,8 @@ class Pairwise(nn.Module):
 
     def forward(self, X: torch.Tensor, Y: Optional[torch.Tensor] = None):
         """Returns `X_poten` alone when `Y is None`, else `(X_poten, Y_poten)`."""
-        x = F.normalize(self.embed_X(X), dim=-1)
-        y = F.normalize(self.embed_Y(Y if Y is not None else X), dim=-1)
+        x = l2_normalize(self.embed_X(X))
+        y = l2_normalize(self.embed_Y(Y if Y is not None else X))
 
         S = x @ y.transpose(1, 2)
         if self.x_spatial_dim is not None:
@@ -194,9 +223,9 @@ class Ternary(nn.Module):
 
     def forward(self, X: torch.Tensor, Y: torch.Tensor, Z: torch.Tensor):
         """Returns one potential per modality: `(X_poten, Y_poten, Z_poten)`."""
-        x = F.normalize(self.embed_X(X), dim=-1)
-        y = F.normalize(self.embed_Y(Y), dim=-1)
-        z = F.normalize(self.embed_Z(Z), dim=-1)
+        x = l2_normalize(self.embed_X(X))
+        y = l2_normalize(self.embed_Y(Y))
+        z = l2_normalize(self.embed_Z(Z))
 
         # One fused contraction rather than per-slice outer products.
         interaction = torch.einsum("bxd,byd,bzd->bxyz", x, y, z)

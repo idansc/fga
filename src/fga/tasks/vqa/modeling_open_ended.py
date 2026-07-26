@@ -64,6 +64,9 @@ class OpenEndedVQAConfig(PretrainedConfig):
             a one-hot target throws that away.
         dropout (`float`, *optional*, defaults to 0.5): encoder dropout.
         classifier_dropout (`float`, *optional*, defaults to 0.3): head dropout.
+        mask_padding (`bool`, *optional*, defaults to `True`):
+            Keep attention off padded question words, and zero the encoder state
+            there. See [`HighOrderAttentionConfig`].
     """
 
     model_type = "open_ended_vqa"
@@ -81,6 +84,7 @@ class OpenEndedVQAConfig(PretrainedConfig):
         soft_targets: bool = False,
         dropout: float = 0.5,
         classifier_dropout: float = 0.3,
+        mask_padding: bool = True,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -94,6 +98,7 @@ class OpenEndedVQAConfig(PretrainedConfig):
         self.soft_targets = soft_targets
         self.dropout = dropout
         self.classifier_dropout = classifier_dropout
+        self.mask_padding = mask_padding
         kwargs.setdefault("pad_token_id", 0)
         super().__init__(**kwargs)
 
@@ -203,7 +208,8 @@ class OpenEndedVQAModel(PreTrainedModel):
         image = self.image_encoder(image_features)
 
         # Keep attention off the padded question slots; see [`HighOrderAttentionForVQA`].
-        attended = self.attention(question, image, masks=[question_input_ids != 0, None], return_weights=True)
+        masks = [question_input_ids != 0, None] if self.config.mask_padding else None
+        attended = self.attention(question, image, masks=masks, return_weights=True)
         attended, weights = attended if output_attentions else (attended[0], None)
         pooled_question, pooled_image = attended
 

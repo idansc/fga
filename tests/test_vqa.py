@@ -381,3 +381,39 @@ def test_question_encoder_runs_word_and_phrase_streams(tiny_config):
     encoder = QuestionEncoder(tiny_config).eval()
     assert encoder.word_lstm.hidden_size + encoder.phrase_lstm.hidden_size == tiny_config.hidden_size
     assert not encoder.word_lstm.bidirectional and not encoder.phrase_lstm.bidirectional
+
+
+def test_cbp_places_a_pair_in_the_bin_the_sketch_predicts():
+    """The exact statement, not a statistical one.
+
+    Count Sketch sends feature `i` of `x` to bin `h1[i]` with sign `s1[i]`, and
+    the sketch of an outer product is the circular convolution of the two
+    sketches — so a single pair `(i, j)` must land in bin `(h1[i] + h2[j]) % d`
+    carrying `s1[i] * s2[j]`. Getting the convolution backwards, or dropping a
+    sign, still passes an inner-product correlation test; it fails this one.
+    """
+    pooling = CompactBilinearPooling(4, 5, output_dim=8, seed=0).eval()
+
+    for i in range(4):
+        for j in range(5):
+            x, y = torch.zeros(1, 4), torch.zeros(1, 5)
+            x[0, i], y[0, j] = 1.0, 1.0
+            with torch.no_grad():
+                out = pooling(x, y)[0]
+
+            expected_bin = int((pooling.x_index[i] + pooling.y_index[j]) % 8)
+            expected_sign = float(pooling.x_sign[i] * pooling.y_sign[j])
+            assert torch.argmax(out.abs()).item() == expected_bin, (i, j)
+            torch.testing.assert_close(out[expected_bin], torch.tensor(expected_sign), atol=1e-5, rtol=1e-4)
+            # Nothing meaningful anywhere else.
+            other = torch.cat([out[:expected_bin], out[expected_bin + 1 :]])
+            assert other.abs().max() < 1e-5, (i, j, other.abs().max().item())
+
+
+def test_cbp_is_bilinear_in_each_argument():
+    """Scaling an input scales the sketch, which the convolution must preserve."""
+    pooling = CompactBilinearPooling(6, 6, output_dim=32, seed=0).eval()
+    x, y = torch.randn(2, 6), torch.randn(2, 6)
+    with torch.no_grad():
+        torch.testing.assert_close(pooling(3.0 * x, y), 3.0 * pooling(x, y), atol=1e-4, rtol=1e-4)
+        torch.testing.assert_close(pooling(x, -2.0 * y), -2.0 * pooling(x, y), atol=1e-4, rtol=1e-4)

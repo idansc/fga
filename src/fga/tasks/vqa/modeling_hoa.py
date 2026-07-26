@@ -66,6 +66,11 @@ class HighOrderAttentionConfig(PretrainedConfig):
             Dropout on the encoders.
         classifier_dropout (`float`, *optional*, defaults to 0.3):
             Dropout before the answer classifier.
+        mask_padding (`bool`, *optional*, defaults to `True`):
+            Keep attention off padded question words and candidate slots, and
+            zero the encoder state at padded positions. Set to `False` for the
+            ablation — it costs accuracy, since the padded positions then absorb
+            most of the attention mass.
     """
 
     model_type = "high_order_attention"
@@ -84,6 +89,7 @@ class HighOrderAttentionConfig(PretrainedConfig):
         use_ternary: bool = True,
         dropout: float = 0.5,
         classifier_dropout: float = 0.3,
+        mask_padding: bool = True,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -98,6 +104,7 @@ class HighOrderAttentionConfig(PretrainedConfig):
         self.use_ternary = use_ternary
         self.dropout = dropout
         self.classifier_dropout = classifier_dropout
+        self.mask_padding = mask_padding
         kwargs.setdefault("pad_token_id", 0)
         super().__init__(**kwargs)
 
@@ -146,6 +153,7 @@ class QuestionEncoder(nn.Module):
         self.word_lstm = nn.LSTM(config.word_embed_dim, config.hidden_size // 2, batch_first=True)
         self.phrase_lstm = nn.LSTM(config.word_embed_dim, config.hidden_size // 2, batch_first=True)
         self.dropout = nn.Dropout(config.dropout)
+        self.mask_padding = config.mask_padding
 
     def forward(self, input_ids: torch.LongTensor) -> torch.Tensor:
         embedded = self.dropout(torch.tanh(self.embedding(input_ids)))
@@ -154,6 +162,8 @@ class QuestionEncoder(nn.Module):
         word, _ = self.word_lstm(embedded)
         phrase, _ = self.phrase_lstm(local)
         sequence = self.dropout(torch.cat((word, phrase), dim=-1))
+        if not self.mask_padding:
+            return sequence
         return sequence * (input_ids != 0).unsqueeze(-1)
 
 
@@ -265,7 +275,9 @@ class HighOrderAttentionForVQA(PreTrainedModel):
         # softmax. The original masks the question only; the candidates are
         # masked here too, since attending to an absent answer cannot help.
         # Regions have no padding.
-        masks = [question_input_ids != 0, None, choice_input_ids != 0]
+        masks = None
+        if self.config.mask_padding:
+            masks = [question_input_ids != 0, None, choice_input_ids != 0]
         attended = self.attention(question, image, choices, masks=masks, return_weights=True)
         attended, weights = attended if output_attentions else (attended[0], None)
         pooled_question, pooled_image, pooled_answer = attended
