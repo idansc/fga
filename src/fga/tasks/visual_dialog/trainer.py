@@ -47,7 +47,7 @@ def load_dense_annotations(path: str, image_ids: Sequence[int]) -> Dict[str, np.
         skipped by NDCG.
     """
     reader = DenseAnnotationsReader(path)
-    num_options = len(reader[image_ids[0]]["gt_relevance"]) if image_ids else 100
+    num_options = len(reader.relevance_of(reader[image_ids[0]])) if image_ids else 100
 
     relevance = np.zeros((len(image_ids), num_options), dtype=np.float32)
     round_ids = np.ones(len(image_ids), dtype=np.int64)
@@ -57,7 +57,7 @@ def load_dense_annotations(path: str, image_ids: Sequence[int]) -> Dict[str, np.
             missing += 1
             continue
         entry = reader[image_id]
-        relevance[i] = np.asarray(entry["gt_relevance"], dtype=np.float32)
+        relevance[i] = np.asarray(reader.relevance_of(entry), dtype=np.float32)
         round_ids[i] = int(entry["round_id"])
     if missing:
         print(f"Warning: {missing}/{len(image_ids)} images have no dense annotation; they contribute 0 to NDCG.")

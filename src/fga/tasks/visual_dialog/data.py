@@ -322,6 +322,18 @@ class DenseAnnotationsReader:
         # keys: {"image_id", "round_id", "gt_relevance"}
         return self._by_image_id[image_id]
 
+    @staticmethod
+    def relevance_of(entry: Dict[str, Any]) -> list:
+        """The relevance vector, whichever key this release used.
+
+        The val file calls it `gt_relevance`; the dense annotations released for
+        the 2,000-image train subset call it `relevance`.
+        """
+        for key in ("gt_relevance", "relevance"):
+            if key in entry:
+                return entry[key]
+        raise KeyError(f"no relevance field in dense annotation entry; keys are {sorted(entry)}")
+
     @property
     def split(self) -> str:
         return "val"
