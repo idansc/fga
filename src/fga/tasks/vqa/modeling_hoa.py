@@ -186,7 +186,7 @@ class HighOrderAttentionForVQA(PreTrainedModel):
             embed_dims=[hidden, hidden, hidden],
             num_entities=[config.max_question_length, config.num_regions, config.num_choices],
             modality_names=list(MODALITY_NAMES),
-            ternary_interactions=[(0, 1, 2)] if config.use_ternary else None,
+            ternary_interactions=[MODALITY_NAMES] if config.use_ternary else None,
         )
 
         # The original fuses answer-image and question-image, then fuses those.

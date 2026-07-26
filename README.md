@@ -150,7 +150,8 @@ own, so pairwise factors cannot express this. Declare one on any three modalitie
 FactorGraphAttention(
     embed_dims=[512, 512, 512],
     num_entities=[15, 196, 18],
-    ternary_interactions=[(0, 1, 2)],
+    modality_names=["question", "image", "answer"],
+    ternary_interactions=[("question", "image", "answer")],
 )
 ```
 

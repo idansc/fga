@@ -302,3 +302,25 @@ def test_open_ended_round_trips(open_ended_config, tmp_path):
     with torch.no_grad():
         after = OpenEndedVQAModel.from_pretrained(tmp_path).eval()(**batch).logits
     torch.testing.assert_close(before, after)
+
+
+def test_ternary_interactions_are_declared_by_name():
+    named = FactorGraphAttention(
+        embed_dims=[8, 8, 8],
+        num_entities=[5, 6, 4],
+        modality_names=["question", "image", "answer"],
+        ternary_interactions=[("question", "image", "answer")],
+    )
+    indexed = FactorGraphAttention(embed_dims=[8, 8, 8], num_entities=[5, 6, 4], ternary_interactions=[(0, 1, 2)])
+    assert named.ternary_interactions == indexed.ternary_interactions == [(0, 1, 2)]
+    assert "ternary=[(question, image, answer)]" in repr(named)
+
+
+def test_ternary_with_an_unknown_name_is_a_clear_error():
+    with pytest.raises(ValueError, match="Unknown modality 'answr'"):
+        FactorGraphAttention(
+            embed_dims=[8, 8, 8],
+            num_entities=[5, 6, 4],
+            modality_names=["question", "image", "answer"],
+            ternary_interactions=[("question", "image", "answr")],
+        )

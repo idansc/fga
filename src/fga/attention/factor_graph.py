@@ -194,8 +194,13 @@ class FactorGraphAttention(nn.Module):
                     self.num_of_potentials[k] += (self.n_modalities - 1) - len(self.sharing_factor_weights)
 
         # Three-way factors, from High-Order Attention. Each triple contributes one
-        # extra potential to each of its three modalities.
-        self.ternary_interactions = [tuple(sorted(t)) for t in (ternary_interactions or [])]
+        # extra potential to each of its three modalities. Members are named --
+        # ("question", "image", "answer") -- with indices accepted for the
+        # positional style; either way they are stored as sorted indices, which is
+        # what keys the modules and therefore the checkpoints.
+        self.ternary_interactions = [
+            tuple(sorted(self._resolve_modality(m) for m in triple)) for triple in (ternary_interactions or [])
+        ]
         self.tri_models = nn.ModuleDict()
         for triple in self.ternary_interactions:
             if len(set(triple)) != 3:
@@ -225,6 +230,15 @@ class FactorGraphAttention(nn.Module):
         self.reduce_potentials = nn.ModuleList(
             [nn.Linear(self.num_of_potentials[idx], 1, bias=False) for idx in range(self.n_modalities)]
         )
+
+    def _resolve_modality(self, ref) -> int:
+        """A modality reference is its name, or an index for the positional style."""
+        if isinstance(ref, str):
+            try:
+                return self.modality_names.index(ref)
+            except ValueError:
+                raise ValueError(f"Unknown modality {ref!r}; this layer has {self.modality_names}.") from None
+        return int(ref)
 
     @classmethod
     def from_modalities(
@@ -299,6 +313,11 @@ class FactorGraphAttention(nn.Module):
                 f"{self.modality_names[i]}x{n}" for i, (n, _) in sorted(self.sharing_factor_weights.items())
             )
             parts.append(f"shared=[{shared}]")
+        if self.ternary_interactions:
+            triples = "; ".join(
+                "(" + ", ".join(self.modality_names[i] for i in triple) + ")" for triple in self.ternary_interactions
+            )
+            parts.append(f"ternary=[{triples}]")
         return ", ".join(parts)
 
     def describe(self) -> str:
