@@ -54,6 +54,7 @@ class Arguments:
     hidden_size: int = field(default=512)
     pooling_dim: int = field(default=16000)
     features_in_memory: bool = field(default=True)
+    normalize_features: bool = field(default=True)
     max_eval_questions: Optional[int] = field(default=None)
 
 
@@ -73,6 +74,7 @@ def main():
             features_h5_path=os.path.join(args.vqa_dir, "features.h5"),
             split=split,
             in_memory=in_memory,
+            normalize_features=args.normalize_features,
         )
 
     train_base = make("train", args.features_in_memory) if training_args.do_train else None

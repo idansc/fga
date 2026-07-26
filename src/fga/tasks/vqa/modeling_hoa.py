@@ -124,29 +124,37 @@ class HighOrderAttentionOutput(ModelOutput):
 
 
 class QuestionEncoder(nn.Module):
-    """Word embeddings, a trigram convolution, and a bidirectional LSTM.
+    """Word embeddings and a trigram convolution, each read by its own LSTM.
 
-    The trigram convolution is what the original uses to give each position local
-    phrase context before the recurrence.
+    Two unidirectional recurrences run in parallel -- one over the word
+    embeddings, one over the trigram convolution -- and are concatenated, so the
+    encoder carries word-level and phrase-level state side by side. That is the
+    original's `rnn1(embed)` / `rnn2(trigram)` pair; an earlier version of this
+    port ran a single bidirectional LSTM over the convolution alone, which drops
+    the word-level stream entirely.
+
+    Both streams are zeroed at padded positions, matching the original's
+    `maskzero`. Questions are padded on the right, so a padded step never
+    precedes a real one and zeroing the output is equivalent to suppressing the
+    recurrence there.
     """
 
     def __init__(self, config: HighOrderAttentionConfig):
         super().__init__()
         self.embedding = nn.Embedding(config.vocab_size, config.word_embed_dim, padding_idx=0)
         self.trigram = nn.Conv1d(config.word_embed_dim, config.word_embed_dim, kernel_size=3, padding=1)
-        self.lstm = nn.LSTM(
-            config.word_embed_dim,
-            config.hidden_size // 2,
-            batch_first=True,
-            bidirectional=True,
-        )
+        self.word_lstm = nn.LSTM(config.word_embed_dim, config.hidden_size // 2, batch_first=True)
+        self.phrase_lstm = nn.LSTM(config.word_embed_dim, config.hidden_size // 2, batch_first=True)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, input_ids: torch.LongTensor) -> torch.Tensor:
         embedded = self.dropout(torch.tanh(self.embedding(input_ids)))
         local = torch.tanh(self.trigram(embedded.transpose(1, 2))).transpose(1, 2)
-        sequence, _ = self.lstm(local)
-        return self.dropout(sequence)
+
+        word, _ = self.word_lstm(embedded)
+        phrase, _ = self.phrase_lstm(local)
+        sequence = self.dropout(torch.cat((word, phrase), dim=-1))
+        return sequence * (input_ids != 0).unsqueeze(-1)
 
 
 class HighOrderAttentionForVQA(PreTrainedModel):
@@ -250,7 +258,15 @@ class HighOrderAttentionForVQA(PreTrainedModel):
         image = self.image_encoder(image_features)
         choices = self.choice_dropout(torch.tanh(self.choice_embedding(choice_input_ids)))
 
-        attended = self.attention(question, image, choices, return_weights=True)
+        # Questions are padded to 15 words and the candidate list to 18 slots.
+        # Padding is not inert -- an encoder still emits a state there, and the
+        # unmasked model put 68% of its question attention and 32% of its answer
+        # attention on those slots -- so the empty entities are excluded from the
+        # softmax. The original masks the question only; the candidates are
+        # masked here too, since attending to an absent answer cannot help.
+        # Regions have no padding.
+        masks = [question_input_ids != 0, None, choice_input_ids != 0]
+        attended = self.attention(question, image, choices, masks=masks, return_weights=True)
         attended, weights = attended if output_attentions else (attended[0], None)
         pooled_question, pooled_image, pooled_answer = attended
 

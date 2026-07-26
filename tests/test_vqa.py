@@ -324,3 +324,60 @@ def test_ternary_with_an_unknown_name_is_a_clear_error():
             modality_names=["question", "image", "answer"],
             ternary_interactions=[("question", "image", "answr")],
         )
+
+
+# --- the official metric -------------------------------------------------
+
+
+def test_answer_normalization_matches_the_official_rewrites():
+    from fga.tasks.vqa.data import normalize_answer
+
+    assert normalize_answer("Two") == "2"
+    assert normalize_answer("a dog.") == "dog"
+    assert normalize_answer("the man's hat") == "man's hat"
+    assert normalize_answer("dont know") == "don't know"
+    assert normalize_answer("1,000") == "1000"
+    assert normalize_answer("3.5") == "3.5"  # decimals keep their point
+
+
+def test_vqa_accuracy_leaves_one_annotator_out():
+    """Three of ten is 0.9, not 1.0: each annotator is scored against the other nine."""
+    from fga.tasks.vqa.data import vqa_accuracy
+
+    humans = ["cat"] * 3 + ["dog"] * 7
+    assert vqa_accuracy("cat", humans) == pytest.approx(0.9)
+    assert vqa_accuracy("dog", humans) == pytest.approx(1.0)
+    assert vqa_accuracy("bird", humans) == pytest.approx(0.0)
+    # Unanimous answers are unaffected by dropping one vote.
+    assert vqa_accuracy("cat", ["cat"] * 10) == pytest.approx(1.0)
+
+
+def test_vqa_accuracy_normalizes_both_sides():
+    from fga.tasks.vqa.data import vqa_accuracy
+
+    assert vqa_accuracy("2", ["two"] * 10) == pytest.approx(1.0)
+    assert vqa_accuracy("2", ["two"] * 10, normalize=False) == pytest.approx(0.0)
+
+
+# --- the question encoder ------------------------------------------------
+
+
+def test_question_encoder_zeroes_padded_positions(tiny_config):
+    from fga.tasks.vqa.modeling_hoa import QuestionEncoder
+
+    encoder = QuestionEncoder(tiny_config).eval()
+    ids = torch.tensor([[3, 4, 5, 0, 0]][: 1] * 2)[:, : tiny_config.max_question_length]
+    ids[:, -1] = 0
+    with torch.no_grad():
+        states = encoder(ids)
+    assert torch.all(states[ids == 0] == 0)
+    assert not torch.all(states[ids != 0] == 0)
+
+
+def test_question_encoder_runs_word_and_phrase_streams(tiny_config):
+    """Half the state comes from the embeddings, half from the convolution."""
+    from fga.tasks.vqa.modeling_hoa import QuestionEncoder
+
+    encoder = QuestionEncoder(tiny_config).eval()
+    assert encoder.word_lstm.hidden_size + encoder.phrase_lstm.hidden_size == tiny_config.hidden_size
+    assert not encoder.word_lstm.bidirectional and not encoder.phrase_lstm.bidirectional

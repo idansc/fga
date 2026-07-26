@@ -315,3 +315,47 @@ def test_conv_era_checkpoints_migrate_to_the_linear_shape(tmp_path):
     # And running it again is a no-op.
     second = subprocess.run([sys.executable, str(script), str(tmp_path)], capture_output=True, text=True)
     assert "nothing to do" in second.stdout
+
+
+def test_masked_entities_get_no_attention():
+    """Padded entities must be excluded from the softmax, not merely down-weighted."""
+    attention = FactorGraphAttention(embed_dims=[8, 16], num_entities=[5, 6]).eval()
+    text, image = torch.randn(3, 5, 8), torch.randn(3, 6, 16)
+
+    mask = torch.ones(3, 5, dtype=torch.bool)
+    mask[:, 3:] = False  # the last two words are padding
+
+    with torch.no_grad():
+        _, weights = attention(text, image, masks=[mask, None], return_weights=True)
+
+    assert torch.all(weights[0][:, 3:] == 0)
+    torch.testing.assert_close(weights[0].sum(1), torch.ones(3))
+    # The unmasked modality is untouched.
+    torch.testing.assert_close(weights[1].sum(1), torch.ones(3))
+
+
+def test_pooled_vector_is_a_sum_over_real_entities_only():
+    """The pooled vector is the weighted sum of the unmasked entities, nothing else."""
+    attention = FactorGraphAttention(embed_dims=[8, 16], num_entities=[5, 6]).eval()
+    text, image = torch.randn(2, 5, 8), torch.randn(2, 6, 16)
+    mask = torch.tensor([[True, True, True, False, False]] * 2)
+
+    with torch.no_grad():
+        pooled, weights = attention(text, image, masks=[mask, None], return_weights=True)
+
+    expected = (weights[0][:, :3, None] * text[:, :3]).sum(dim=1)
+    torch.testing.assert_close(pooled[0], expected)
+
+
+def test_all_padding_row_stays_finite():
+    """A fully padded row would softmax to NaN; it falls back to uniform."""
+    attention = FactorGraphAttention(embed_dims=[8, 16], num_entities=[5, 6]).eval()
+    text, image = torch.randn(2, 5, 8), torch.randn(2, 6, 16)
+    mask = torch.ones(2, 5, dtype=torch.bool)
+    mask[1] = False
+
+    with torch.no_grad():
+        pooled, weights = attention(text, image, masks=[mask, None], return_weights=True)
+
+    assert torch.isfinite(weights[0]).all() and torch.isfinite(pooled[0]).all()
+    torch.testing.assert_close(weights[0][1].sum(), torch.tensor(1.0))

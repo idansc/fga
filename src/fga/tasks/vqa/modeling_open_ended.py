@@ -202,7 +202,8 @@ class OpenEndedVQAModel(PreTrainedModel):
         question = self.question_encoder(question_input_ids)
         image = self.image_encoder(image_features)
 
-        attended = self.attention(question, image, return_weights=True)
+        # Keep attention off the padded question slots; see [`HighOrderAttentionForVQA`].
+        attended = self.attention(question, image, masks=[question_input_ids != 0, None], return_weights=True)
         attended, weights = attended if output_attentions else (attended[0], None)
         pooled_question, pooled_image = attended
 

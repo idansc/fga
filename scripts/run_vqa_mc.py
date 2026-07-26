@@ -9,10 +9,13 @@ python scripts/run_vqa_mc.py \
 ```
 
 Evaluation reports two numbers. `mc_accuracy` is exact match of the predicted
-answer id against the annotators' consensus answer. `vqa_accuracy` is the
-official graded metric — full credit once three of ten humans gave the predicted
-answer — computed by restricting the argmax to each question's 18 candidates and
-comparing the chosen string against the stored human answers.
+answer id against the annotators' consensus answer, over the questions whose
+consensus answer is in the vocabulary. `vqa_accuracy` is the official graded
+metric, computed by restricting the argmax to each question's 18 candidates and
+scoring the chosen string against the ten human answers — averaged over the
+leave-one-annotator-out subsets, with the official answer normalization, and
+counting a question with no in-vocabulary candidate as wrong rather than
+excusing it.
 """
 
 import json
@@ -42,6 +45,7 @@ class Arguments:
     pooling_dim: int = field(default=16000)
     use_ternary: bool = field(default=True)
     features_in_memory: bool = field(default=True, metadata={"help": "~18 GB as float16."})
+    normalize_features: bool = field(default=True, metadata={"help": "L2-normalize each region."})
     max_eval_questions: Optional[int] = field(default=None)
 
 
@@ -62,6 +66,7 @@ def main():
             features_h5_path=os.path.join(args.vqa_dir, "features.h5"),
             split=split,
             in_memory=args.features_in_memory and split == "train",
+            normalize_features=args.normalize_features,
         )
 
     train_dataset = make("train") if training_args.do_train else None
@@ -116,10 +121,11 @@ def main():
         scored = labels > 0
         mc_accuracy = (picked[scored] == labels[scored]).float().mean().item()
 
+        # A question whose eighteen candidates are all out of vocabulary cannot be
+        # answered at all; it scores zero rather than being dropped from the mean.
         official = [
-            vqa_accuracy(answers[p - 1], human_answers[int(qid)])
+            vqa_accuracy(answers[p - 1], human_answers[int(qid)]) if p > 0 else 0.0
             for p, qid in zip(picked.tolist(), question_ids[: logits.size(0)].tolist())
-            if p > 0
         ]
         return {"mc_accuracy": mc_accuracy, "vqa_accuracy": float(np.mean(official))}
 
