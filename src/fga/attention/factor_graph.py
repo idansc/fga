@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .modality import Modality, ModalityPlan, plan_modalities
-from .potentials import Pairwise, Ternary, Unary, conv1x1, pair_key, self_key, tri_key
+from .potentials import Pairwise, Ternary, Unary, pair_key, self_key, tri_key
 
 __all__ = ["FactorGraphAttention", "Atten", "NaiveAttention"]
 
@@ -223,7 +223,7 @@ class FactorGraphAttention(nn.Module):
                 self.num_of_potentials[index] += 1
 
         self.reduce_potentials = nn.ModuleList(
-            [nn.Conv1d(self.num_of_potentials[idx], 1, 1, bias=False) for idx in range(self.n_modalities)]
+            [nn.Linear(self.num_of_potentials[idx], 1, bias=False) for idx in range(self.n_modalities)]
         )
 
     @classmethod
@@ -486,11 +486,12 @@ class FactorGraphAttention(nn.Module):
                 prior = priors[i] if priors[i] is not None else torch.zeros_like(util_factors[i][0])
                 util_factors[i].append(prior)
 
+            # (batch, num_potentials, entities) -> one weighted sum per entity.
             factors = torch.cat(
                 [p if p.dim() == 3 else p.unsqueeze(1) for p in util_factors[i]],
                 dim=1,
             )
-            logits = conv1x1(factors, self.reduce_potentials[i]).squeeze(1)
+            logits = self.reduce_potentials[i](factors.transpose(1, 2)).squeeze(-1)
             weights = F.softmax(logits, dim=1)
             attention.append(torch.bmm(modalities[i].transpose(1, 2), weights.unsqueeze(2)).squeeze(2))
             if return_weights:

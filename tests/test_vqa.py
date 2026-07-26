@@ -49,20 +49,18 @@ def test_ternary_is_the_three_way_inner_product():
     ternary = Ternary(embed_size=6, x_size=4, y_size=3, z_size=2).eval()
     X, Y, Z = torch.randn(2, 4, 6), torch.randn(2, 3, 6), torch.randn(2, 2, 6)
 
-    from fga.attention.potentials import conv1x1
-
-    x = torch.nn.functional.normalize(conv1x1(X.transpose(1, 2), ternary.embed_X), dim=1)
-    y = torch.nn.functional.normalize(conv1x1(Y.transpose(1, 2), ternary.embed_Y), dim=1)
-    z = torch.nn.functional.normalize(conv1x1(Z.transpose(1, 2), ternary.embed_Z), dim=1)
+    x = torch.nn.functional.normalize(ternary.embed_X(X), dim=-1)
+    y = torch.nn.functional.normalize(ternary.embed_Y(Y), dim=-1)
+    z = torch.nn.functional.normalize(ternary.embed_Z(Z), dim=-1)
 
     expected = torch.zeros(2, 4, 3, 2)
     for b in range(2):
         for i in range(4):
             for j in range(3):
                 for k in range(2):
-                    expected[b, i, j, k] = (x[b, :, i] * y[b, :, j] * z[b, :, k]).sum()
+                    expected[b, i, j, k] = (x[b, i] * y[b, j] * z[b, k]).sum()
 
-    torch.testing.assert_close(torch.einsum("bdx,bdy,bdz->bxyz", x, y, z), expected, atol=1e-5, rtol=1e-4)
+    torch.testing.assert_close(torch.einsum("bxd,byd,bzd->bxyz", x, y, z), expected, atol=1e-5, rtol=1e-4)
 
 
 def test_ternary_returns_one_potential_per_modality():

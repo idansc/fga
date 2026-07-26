@@ -2,6 +2,12 @@
 
 Each potential scores the entities of a modality; [`FactorGraphAttention`] stacks
 them and learns how much to weight each one.
+
+Tensors are laid out `(batch, num_entities, channels)` throughout, so every
+projection is a plain `nn.Linear` on the last axis. Earlier releases wrote these as
+`Conv1d(kernel_size=1)` -- the same linear map in a `(batch, channels, length)`
+layout, dispatched to the far slower convolution kernels. Checkpoints saved in
+that shape convert once with `scripts/migrate_conv_checkpoint.py`.
 """
 
 from typing import Optional
@@ -10,44 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__all__ = ["Unary", "Pairwise", "Ternary", "conv1x1", "self_key", "pair_key", "tri_key"]
-
-
-def conv1x1(x: torch.Tensor, conv: nn.Conv1d) -> torch.Tensor:
-    """Apply a `Conv1d(kernel_size=1)` as the linear map it actually is.
-
-    Every convolution in this model has `kernel_size=1`, which over a
-    `(batch, channels, length)` tensor is exactly a linear map on the channel
-    axis applied at each position -- but it dispatches to the convolution kernels,
-    which are far slower for this case. Routing it through `F.linear` instead hits
-    a plain GEMM.
-
-    Measured on CPU at the shapes this model actually uses, the output is
-    bit-identical and the call is ~120x faster for the answer modality
-    (400x512x21) and ~26x for the history (36x128x21); the gap narrows to ~1.1x
-    once the channel count is large enough to be compute-bound, as with the 2048
-    image features.
-
-    The `Conv1d` module is kept as the parameter holder so state dicts, and every
-    published checkpoint, are unchanged.
-    """
-    weight = conv.weight.squeeze(-1)
-    return F.linear(x.transpose(1, 2), weight, conv.bias).transpose(1, 2)
-
-
-def self_key(idx: int) -> str:
-    """ModuleDict key for a modality's self-interaction factor."""
-    return f"self_{idx}"
-
-
-def pair_key(idx1: int, idx2: int) -> str:
-    """ModuleDict key for the factor between two distinct modalities."""
-    return f"{idx1}_{idx2}"
-
-
-def tri_key(idx1: int, idx2: int, idx3: int) -> str:
-    """ModuleDict key for the factor among three distinct modalities."""
-    return f"tri_{idx1}_{idx2}_{idx3}"
+__all__ = ["Unary", "Pairwise", "Ternary", "self_key", "pair_key", "tri_key"]
 
 
 class Unary(nn.Module):
@@ -56,33 +25,30 @@ class Unary(nn.Module):
     Args:
         embed_size: embedding dimension of the modality.
         dropout: dropout probability applied to the hidden activation.
+
+    Shape:
+        - Input: `(batch, num_entities, embed_size)`
+        - Output: `(batch, num_entities)`
     """
 
     def __init__(self, embed_size: int, dropout: float = 0.5):
         super().__init__()
-        self.embed = nn.Conv1d(embed_size, embed_size, 1)
-        self.feature_reduce = nn.Conv1d(embed_size, 1, 1)
+        self.embed = nn.Linear(embed_size, embed_size)
+        self.feature_reduce = nn.Linear(embed_size, 1)
         self.dropout = dropout
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        """Args: X of shape `(batch, num_entities, embed_size)`.
-
-        Returns: potentials of shape `(batch, num_entities)`.
-        """
-        X = X.transpose(1, 2)
-        X_embed = conv1x1(X, self.embed)
-        X_nl_embed = F.dropout(F.relu(X_embed), p=self.dropout, training=self.training)
-        X_poten = conv1x1(X_nl_embed, self.feature_reduce)
-        return X_poten.squeeze(1)
+        embedded = F.dropout(F.relu(self.embed(X)), p=self.dropout, training=self.training)
+        return self.feature_reduce(embedded).squeeze(-1)
 
 
 class Pairwise(nn.Module):
     """Interaction potential between two modalities, or a modality and itself.
 
     Both modalities are projected to a common space, L2-normalized and multiplied
-    to give a cosine-similarity grid `S`. When the spatial dimensions are known
-    the grid is batch-normalized and marginalized by a learned `Conv1d`;
-    otherwise it falls back to a plain mean over the opposite axis.
+    to give a cosine-similarity grid `S`. When the entity counts are known the grid
+    is batch-normalized and marginalized by a learned linear map; otherwise it
+    falls back to a plain mean over the opposite axis.
 
     Args:
         embed_x_size: embedding dimension of the first modality.
@@ -93,8 +59,13 @@ class Pairwise(nn.Module):
         y_spatial_dim: number of entities in the second modality.
         self_interaction: this module scores a modality against itself, so only
             the `X` marginal is ever consumed. The original code still built and
-            ran `margin_Y` here, discarding the result -- six wasted convolutions
-            per forward pass and twelve parameters that never received a gradient.
+            ran `margin_Y` here, discarding the result -- wasted work, and
+            parameters that never received a gradient.
+
+    Shape:
+        - Input: `(batch, x_entities, embed_x_size)` and optionally
+          `(batch, y_entities, embed_y_size)`
+        - Output: `(batch, x_entities)`, or both marginals when `Y` is given.
     """
 
     def __init__(
@@ -113,46 +84,50 @@ class Pairwise(nn.Module):
         self.x_spatial_dim = x_spatial_dim
         self.self_interaction = self_interaction
 
-        self.embed_X = nn.Conv1d(embed_x_size, self.embed_size, 1)
-        self.embed_Y = nn.Conv1d(embed_y_size, self.embed_size, 1)
+        self.embed_X = nn.Linear(embed_x_size, self.embed_size)
+        self.embed_Y = nn.Linear(embed_y_size, self.embed_size)
         if x_spatial_dim is not None:
             self.normalize_S = nn.BatchNorm1d(self.x_spatial_dim * self.y_spatial_dim)
-            self.margin_X = nn.Conv1d(self.y_spatial_dim, 1, 1)
+            self.margin_X = nn.Linear(self.y_spatial_dim, 1)
             if not self_interaction:
-                self.margin_Y = nn.Conv1d(self.x_spatial_dim, 1, 1)
+                self.margin_Y = nn.Linear(self.x_spatial_dim, 1)
 
     def forward(self, X: torch.Tensor, Y: Optional[torch.Tensor] = None):
-        """Args:
-            X: `(batch, x_entities, embed_x_size)`.
-            Y: `(batch, y_entities, embed_y_size)`, or `None` for self-interaction.
+        """Returns `X_poten` alone when `Y is None`, else `(X_poten, Y_poten)`."""
+        x = F.normalize(self.embed_X(X), dim=-1)
+        y = F.normalize(self.embed_Y(Y if Y is not None else X), dim=-1)
 
-        Returns: `X_poten` alone when `Y is None`, else `(X_poten, Y_poten)`.
-        """
-        X_t = X.transpose(1, 2)
-        Y_t = Y.transpose(1, 2) if Y is not None else X_t
-
-        X_embed = conv1x1(X_t, self.embed_X)
-        Y_embed = conv1x1(Y_t, self.embed_Y)
-
-        X_norm = F.normalize(X_embed, dim=1)
-        Y_norm = F.normalize(Y_embed, dim=1)
-
-        S = X_norm.transpose(1, 2).bmm(Y_norm)
+        S = x @ y.transpose(1, 2)
         if self.x_spatial_dim is not None:
-            S = self.normalize_S(S.view(-1, self.x_spatial_dim * self.y_spatial_dim)).view(
+            S = self.normalize_S(S.reshape(-1, self.x_spatial_dim * self.y_spatial_dim)).view(
                 -1, self.x_spatial_dim, self.y_spatial_dim
             )
-            X_poten = conv1x1(S.transpose(1, 2), self.margin_X).transpose(1, 2).squeeze(2)
+            X_poten = self.margin_X(S).squeeze(-1)
             if Y is None:
                 return X_poten
-            Y_poten = conv1x1(S, self.margin_Y).transpose(1, 2).squeeze(2)
+            Y_poten = self.margin_Y(S.transpose(1, 2)).squeeze(-1)
         else:
-            X_poten = S.mean(dim=2, keepdim=False)
+            X_poten = S.mean(dim=2)
             if Y is None:
                 return X_poten
-            Y_poten = S.mean(dim=1, keepdim=False)
+            Y_poten = S.mean(dim=1)
 
         return X_poten, Y_poten
+
+
+def self_key(idx: int) -> str:
+    """ModuleDict key for a modality's self-interaction factor."""
+    return f"self_{idx}"
+
+
+def pair_key(idx1: int, idx2: int) -> str:
+    """ModuleDict key for the factor between two distinct modalities."""
+    return f"{idx1}_{idx2}"
+
+
+def tri_key(idx1: int, idx2: int, idx3: int) -> str:
+    """ModuleDict key for the factor among three distinct modalities."""
+    return f"tri_{idx1}_{idx2}_{idx3}"
 
 
 class Ternary(nn.Module):
@@ -175,9 +150,8 @@ class Ternary(nn.Module):
     This follows [`Pairwise`]'s conventions rather than the original Lua
     implementation's, so that a factor graph can mix the two: normalized
     embeddings and a batch-normalized grid instead of a learned elementwise
-    scale, convolutional marginalization, and no `tanh` on the output -- the
-    potentials are combined by a learned reduction before the softmax, so
-    squashing them here only discards range.
+    scale, and no `tanh` on the output -- the potentials are combined by a learned
+    reduction before the softmax, so squashing them here only discards range.
 
     Args:
         embed_size: shared projection dimension.
@@ -208,36 +182,31 @@ class Ternary(nn.Module):
         self.embed_size = embed_size
         self.sizes = (x_size, y_size, z_size)
 
-        self.embed_X = nn.Conv1d(dim_x or embed_size, embed_size, 1)
-        self.embed_Y = nn.Conv1d(dim_y or embed_size, embed_size, 1)
-        self.embed_Z = nn.Conv1d(dim_z or embed_size, embed_size, 1)
+        self.embed_X = nn.Linear(dim_x or embed_size, embed_size)
+        self.embed_Y = nn.Linear(dim_y or embed_size, embed_size)
+        self.embed_Z = nn.Linear(dim_z or embed_size, embed_size)
 
         self.normalize_T = nn.BatchNorm1d(x_size * y_size * z_size)
 
-        self.margin_X = nn.Conv1d(y_size * z_size, 1, 1)
-        self.margin_Y = nn.Conv1d(x_size * z_size, 1, 1)
-        self.margin_Z = nn.Conv1d(x_size * y_size, 1, 1)
+        self.margin_X = nn.Linear(y_size * z_size, 1)
+        self.margin_Y = nn.Linear(x_size * z_size, 1)
+        self.margin_Z = nn.Linear(x_size * y_size, 1)
 
     def forward(self, X: torch.Tensor, Y: torch.Tensor, Z: torch.Tensor):
         """Returns one potential per modality: `(X_poten, Y_poten, Z_poten)`."""
-        # (batch, embed, entities), matching Pairwise's layout.
-        x = F.normalize(conv1x1(X.transpose(1, 2), self.embed_X), dim=1)
-        y = F.normalize(conv1x1(Y.transpose(1, 2), self.embed_Y), dim=1)
-        z = F.normalize(conv1x1(Z.transpose(1, 2), self.embed_Z), dim=1)
+        x = F.normalize(self.embed_X(X), dim=-1)
+        y = F.normalize(self.embed_Y(Y), dim=-1)
+        z = F.normalize(self.embed_Z(Z), dim=-1)
 
         # One fused contraction rather than per-slice outer products.
-        interaction = torch.einsum("bdx,bdy,bdz->bxyz", x, y, z)
+        interaction = torch.einsum("bxd,byd,bzd->bxyz", x, y, z)
 
         batch = interaction.size(0)
         nx, ny, nz = self.sizes
         interaction = self.normalize_T(interaction.reshape(batch, nx * ny * nz)).view(batch, nx, ny, nz)
 
-        def marginalize(grid: torch.Tensor, conv: nn.Conv1d, keep: int) -> torch.Tensor:
-            # (batch, keep, rest) -> (batch, rest, keep) -> conv over `rest` -> (batch, keep)
-            return conv1x1(grid.reshape(batch, keep, -1).transpose(1, 2), conv).squeeze(1)
-
         return (
-            marginalize(interaction, self.margin_X, nx),
-            marginalize(interaction.permute(0, 2, 1, 3), self.margin_Y, ny),
-            marginalize(interaction.permute(0, 3, 1, 2), self.margin_Z, nz),
+            self.margin_X(interaction.reshape(batch, nx, ny * nz)).squeeze(-1),
+            self.margin_Y(interaction.permute(0, 2, 1, 3).reshape(batch, ny, nx * nz)).squeeze(-1),
+            self.margin_Z(interaction.permute(0, 3, 1, 2).reshape(batch, nz, nx * ny)).squeeze(-1),
         )

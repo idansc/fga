@@ -270,3 +270,48 @@ def test_share_weights_names_must_exist():
             [Modality("a", dim=8, size=5), Modality("h1", dim=4, size=5, connected_to=("a",))],
             share_weights=[["h1", "typo"]],
         )
+
+
+def test_conv_era_checkpoints_migrate_to_the_linear_shape(tmp_path):
+    """Old checkpoints stored the projections as Conv1d weights: (out, in, 1).
+
+    There is deliberately no load-time shim -- `from_pretrained` bypasses module
+    hooks, and hidden reshaping is the kind of magic that bites later. Instead
+    the file is rewritten once by scripts/migrate_conv_checkpoint.py, and this
+    test drives that script end to end.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from safetensors.torch import save_file
+
+    attention = FactorGraphAttention(embed_dims=[8, 16], num_entities=[5, 6]).eval()
+
+    legacy = {}
+    for key, value in attention.state_dict().items():
+        key = "mul_atten." + key
+        legacy[key] = (
+            value.unsqueeze(-1).contiguous() if key.endswith(".weight") and value.dim() == 2 else value.contiguous()
+        )
+    save_file(legacy, tmp_path / "model.safetensors", metadata={"format": "pt"})
+
+    script = Path(__file__).parents[1] / "scripts" / "migrate_conv_checkpoint.py"
+    result = subprocess.run([sys.executable, str(script), str(tmp_path)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+    from safetensors import safe_open
+
+    reloaded = FactorGraphAttention(embed_dims=[8, 16], num_entities=[5, 6]).eval()
+    with safe_open(tmp_path / "model.safetensors", framework="pt") as handle:
+        state = {k[len("mul_atten.") :]: handle.get_tensor(k) for k in handle.keys()}
+    reloaded.load_state_dict(state)
+
+    a, b = torch.randn(2, 5, 8), torch.randn(2, 6, 16)
+    with torch.no_grad():
+        for x, y in zip(attention(a, b), reloaded(a, b)):
+            torch.testing.assert_close(x, y)
+
+    # And running it again is a no-op.
+    second = subprocess.run([sys.executable, str(script), str(tmp_path)], capture_output=True, text=True)
+    assert "nothing to do" in second.stdout

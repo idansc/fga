@@ -80,6 +80,10 @@ def remap_state_dict(state_dict: Dict[str, torch.Tensor]) -> Tuple[Dict[str, tor
             dropped.append(key)
             continue
 
+        # 1x1-convolution weights become Linear weights: drop the trailing axis.
+        if name.endswith(".weight") and value.dim() == 3 and value.size(-1) == 1 and "lstm" not in name:
+            value = value.squeeze(-1)
+
         for old, new in _PREFIX_RENAMES:
             if name.startswith(old):
                 remapped[new + name[len(old) :]] = value

@@ -51,8 +51,9 @@ imported, and `push_to_hub` / `from_pretrained("<user>/fga")` work as usual.
 The package is in two halves:
 
 ```
-fga.attention              the general layer — no task assumptions
-fga.tasks.visual_dialog    the application the paper reports
+fga.attention    the general layer — no task assumptions
+fga.tasks        the applications: visual_dialog, vqa, video_dialog,
+                 video_retrieval, navigation
 ```
 
 `fga.attention` is an ordinary `torch.nn` layer. A **modality** is any set of
@@ -77,31 +78,41 @@ shows the graph it realizes:
 FactorGraphAttention(modalities=[text:512, image:2048], factors=unary+self+pairwise)
 ```
 
-Describe the graph by name rather than by parallel index-aligned lists. These two
-are equivalent, but only one is readable:
+Describe the graph by name rather than by parallel index-aligned lists, with each
+modality declared explicitly — the nine history rounds are nine modalities — and
+weight sharing stated separately:
 
 ```python
-# indexed: "modality 2 repeats 9 times and connects to modalities 0 and 1"
-FactorGraphAttention(embed_dims=[512, 512, 128], num_entities=[100, 21, 21],
-                     sharing_factor_weights={2: (9, [0, 1])})
-
-# named
 from fga import FactorGraphAttention, Modality
 
-attention = FactorGraphAttention.from_modalities([
-    Modality("answer",   dim=512, size=100),
-    Modality("question", dim=512, size=21),
-    Modality("history",  dim=128, size=21, repeats=9, connected_to=("answer", "question")),
-], use_prior=True)
+history = [
+    Modality(f"history_{i}", dim=128, size=21, connected_to=("answer", "question"))
+    for i in range(1, 10)
+]
+
+attention = FactorGraphAttention.from_modalities(
+    [
+        Modality("answer",   dim=512, size=100),
+        Modality("question", dim=512, size=21),
+        *history,
+    ],
+    share_weights=[[m.name for m in history]],
+    use_prior=True,
+)
 
 print(attention.describe())
 ```
 
-`repeats` is what the paper calls factor-weight sharing: the modality arrives as
-`(batch * repeats, entities, dim)` and one set of factor weights serves all
-repeats, which is how nine history rounds stay affordable. `connected_to` is the
-efficiency constraint — a shared modality only interacts with the ones it names.
-Both are validated, so a typo raises instead of silently building a different graph.
+Each modality in a `share_weights` group is passed — and returned — as its own
+`(batch, entities, dim)` tensor, while one set of factor weights serves the whole
+group; that sharing is how nine history rounds stay affordable, and members must
+agree on shape and connections, which is checked. `connected_to` is the
+efficiency constraint: a modality sharing weights only interacts with the ones it
+names. A typo in either raises instead of silently building a different graph.
+
+The indexed spelling (`sharing_factor_weights={2: (9, [0, 1])}` with one packed
+`(batch * repeats, ...)` tensor) still works — it is what the paper's code and
+the published checkpoints use.
 
 To get the attention distributions for a visualization, pass
 `return_weights=True` (or `output_attentions=True` on the Visual Dialog model).

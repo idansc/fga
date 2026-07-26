@@ -181,6 +181,10 @@ def test_attention_module_matches_legacy_attention(patched_legacy):
             head, tail = rest.split(".", 1)
             head = f"{head[1:-1].replace(', ', '_')}" if head.startswith("(") else f"self_{head}"
             key = f"pp_models.{head}.{tail}"
+        # The oracle's projections are Conv1d(kernel_size=1): same numbers with a
+        # trailing singleton axis the Linear modules do not have.
+        if key.endswith(".weight") and value.dim() == 3 and value.size(-1) == 1:
+            value = value.squeeze(-1)
         renamed[key] = value
     missing, unexpected = new.load_state_dict(renamed, strict=False)
     assert not missing
