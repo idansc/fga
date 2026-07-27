@@ -172,8 +172,9 @@ def test_navigation_attention_maps_the_observation_grid():
             observation=torch.randn(BATCH, 9, 32),
             output_attentions=True,
         )
-    assert [tuple(a.shape) for a in out.attentions] == [(BATCH, 1), (BATCH, 9)]
-    torch.testing.assert_close(out.attentions[1].sum(-1), torch.ones(BATCH))
+    # target, memory, action are single vectors; the observation is the grid.
+    assert [tuple(a.shape) for a in out.attentions] == [(BATCH, 1), (BATCH, 1), (BATCH, 1), (BATCH, 9)]
+    torch.testing.assert_close(out.attentions[3].sum(-1), torch.ones(BATCH))
 
 
 def test_navigation_gradients_reach_the_attention():
@@ -181,7 +182,8 @@ def test_navigation_gradients_reach_the_attention():
     policy = NavigationPolicy(config).train()
     out = policy(target_embeds=torch.randn(BATCH, 1, 16), observation=torch.randn(BATCH, 9, 32))
     (out.action_logits.sum() + out.value.sum()).backward()
-    assert policy.attention.un_models[1].embed.weight.grad is not None
+    # The grid-against-target pairwise factor is the one that steers the map.
+    assert policy.attention.pp_models["0_3"].embed_X.weight.grad is not None
 
 
 @pytest.mark.parametrize(
@@ -214,9 +216,37 @@ def test_navigation_keeps_the_spatial_map_rather_than_pooling_it():
     with torch.no_grad():
         out = policy(target_embeds=torch.randn(BATCH, 1, 16), observation=torch.randn(BATCH, 9, 32))
 
-    assert out.attended_grid.shape == (BATCH, config.grid_size, config.hidden_size)
-    # The recurrent layer consumes the whole map plus the pooled target.
-    assert policy.recurrent.input_size == config.grid_size * config.hidden_size + config.hidden_size
+    assert out.attended_grid.shape == (BATCH, config.grid_size, config.attention_dim)
+    # The recurrent layer consumes the whole map, and nothing else.
+    assert policy.recurrent.input_size == config.grid_size * config.attention_dim
+
+
+def test_navigation_attends_memory_and_the_previous_action():
+    """The grid is scored against three things, not just the target.
+
+    The original computes a similarity map per cell against the target, the
+    recurrent memory *and* the last action, then mixes them. An earlier version of
+    this port attended the target alone, so the agent could not use where it had
+    already been or what it had just done.
+    """
+    config = NavigationConfig(target_dim=16, observation_dim=32, grid_size=9, hidden_size=32)
+    policy = NavigationPolicy(config).eval()
+    assert list(policy.attention.modality_names) == ["target", "memory", "action", "observation"]
+
+    target = torch.randn(BATCH, 1, 16)
+    observation = torch.randn(BATCH, 9, 32)
+    memory = (torch.randn(BATCH, 32), torch.randn(BATCH, 32))
+    action = torch.zeros(BATCH, config.action_space)
+    action[:, 2] = 1.0
+
+    with torch.no_grad():
+        base = policy(target_embeds=target, observation=observation)
+        with_memory = policy(target_embeds=target, observation=observation, hidden_state=memory)
+        with_action = policy(target_embeds=target, observation=observation, prev_action=action)
+
+    # Each of the two extra modalities moves the attention over the grid.
+    assert not torch.allclose(base.attended_grid, with_memory.attended_grid, atol=1e-5)
+    assert not torch.allclose(base.attended_grid, with_action.attended_grid, atol=1e-5)
 
 
 def test_navigation_distinguishes_where_the_target_sits():

@@ -18,6 +18,7 @@ part of the [2020 visual dialog challenge winning submission](https://github.com
 [The attention layer](#the-attention-layer) · [Data](#data) ·
 [Training](#training) · [Evaluation](#evaluation) ·
 [Pre-trained models](#pre-trained-models) · [Results](#results) ·
+[Other tasks](#other-tasks-on-the-same-layer) ·
 [Notes on this refactor](#notes-on-this-refactor) ·
 [Use cases of FGA](#use-cases-of-fga) · [Citation](#citation)
 
@@ -129,154 +130,6 @@ names. A typo in either raises instead of silently building a different graph.
 The indexed spelling (`sharing_factor_weights={2: (9, [0, 1])}` with one packed
 `(batch * repeats, ...)` tensor) still works — it is what the paper's code and
 the published checkpoints use.
-
-### Visual Question Answering, with a ternary factor
-
-`fga.tasks.vqa` is a second application: a PyTorch port of
-[HighOrderAtten](https://github.com/idansc/HighOrderAtten) — *High-Order Attention
-Models for Visual Question Answering* (NeurIPS 2017) — rebuilt on the same layer.
-
-```python
-from fga.tasks.vqa import HighOrderAttentionConfig, HighOrderAttentionForVQA
-
-model = HighOrderAttentionForVQA(HighOrderAttentionConfig())
-outputs = model(
-    question_input_ids=question,   # (batch, 15)
-    image_features=regions,        # (batch, 196, 2048)
-    choice_input_ids=choices,      # (batch, 18)
-    labels=answers,
-)
-```
-
-Three modalities are attended jointly — question words, image regions and
-multiple-choice answers — and the distinguishing piece is the **ternary** factor,
-which scores `(region, word, answer)` triples directly:
-
-```
-T[x, y, z] = sum_d  X[x, d] * Y[y, d] * Z[z, d]
-```
-
-A triple can be jointly consistent while no two of its parts stand out on their
-own, so pairwise factors cannot express this. Declare one on any three modalities:
-
-```python
-FactorGraphAttention(
-    embed_dims=[512, 512, 512],
-    num_entities=[15, 196, 18],
-    modality_names=["question", "image", "answer"],
-    ternary_interactions=[("question", "image", "answer")],
-)
-```
-
-Each member then merges one extra potential. Set `use_ternary=False` for the
-pairwise-only ablation the paper reports.
-
-For **open-ended** VQA — no candidate answers, classify over the answer
-vocabulary — use `OpenEndedVQAModel`:
-
-```python
-from fga.tasks.vqa import OpenEndedVQAConfig, OpenEndedVQAModel
-
-model = OpenEndedVQAModel(OpenEndedVQAConfig())
-out = model(question_input_ids=question, image_features=regions, labels=answers)
-```
-
-That leaves two modalities, so there is no ternary factor to apply — and the
-answer can no longer steer where the model looks, which in multiple choice is
-much of what the third modality buys. Set `soft_targets=True` to train against
-the ten human answers as a distribution rather than one label, since VQA accuracy
-credits any answer given by at least three annotators and is graded in the same
-way the dense relevance is for Visual Dialog.
-
-Two notes on the port. The potentials follow **FGA's** conventions — L2-normalized
-embeddings, a batch-normalized interaction grid, learned marginalization — rather
-than the original's `tanh` and learned elementwise scaling. And the interaction
-tensor is `x*y*z` values per example (~53k at the VQA sizes), so it is affordable
-for three modalities but would not be for four.
-
-The fusion head uses Compact Bilinear Pooling, implemented in
-`fga.tasks.vqa.pooling` via the Count Sketch and an FFT, which approximates the
-`d^2` outer product in `O(d + m log m)`.
-
-The data pipeline is included. `scripts/prepare_vqa.py` turns the official VQA v1
-release plus a directory of per-image region features into the files the dataset
-reads, and there is one training script per track:
-
-```bash
-python scripts/prepare_vqa.py --raw_dir vqa/raw --features_dir features --output_dir vqa
-python scripts/run_vqa_mc.py --vqa_dir vqa --output_dir models/vqa-mc \
-    --do_train --do_eval --num_train_epochs 8 --learning_rate 7e-4 --bf16
-```
-
-`vqa_accuracy` implements the official metric: the answer normalization, and the
-average over the ten leave-one-annotator-out subsets.
-
-### The other tasks in this package
-
-The published follow-up models are ported onto the same layer, one package each:
-
-| package | task | modalities | output |
-| --- | --- | --- | --- |
-| `visual_dialog` | rank answers about an image | answers, question, caption, image, 2×history | ranking |
-| `vqa` | VQA, multiple-choice **or** open-ended | question, image, (answers) | classification |
-| `video_dialog` | audio-visual scene-aware dialog | question, 4 video streams, audio | decoder state |
-| `video_retrieval` | text-to-video retrieval | clips, query words | contrastive score |
-| `navigation` | target-driven navigation | target object, observation grid | policy + value |
-
-```python
-from fga.tasks.video_dialog import AVSDConfig, AVSDEncoder
-from fga.tasks.video_retrieval import VideoMatchConfig, VideoMatchModel
-from fga.tasks.navigation import NavigationConfig, NavigationPolicy
-```
-
-They differ in more than their inputs, which is the point: Visual Dialog and VQA
-rank or classify, retrieval trains contrastively with no classifier at all, and
-navigation emits a policy for reinforcement learning. Each exercises the same
-attention differently —
-
-* **video dialog** attends four spatio-temporal streams separately, then fuses
-  them with an LSTM over the stream axis, so moments can be compared after the
-  model has decided what to look at within each;
-* **retrieval** declares no entity counts, so the pairwise factors
-  mean-marginalize and clip/word counts may vary per example;
-* **navigation** carries a recurrent state across an episode and, uniquely here,
-  does *not* pool: the attention re-weights each grid cell and the whole map is
-  flattened into the recurrent state, because the agent must know where the
-  target is, not only that it is present.
-
-`visual_dialog` and `vqa` are trained end to end on real data. The other three
-ship models and tests but no data pipeline — AVSD's features went with the same
-expired links as VisDial's, VideoMatch's were never published, and navigation
-needs the AI2-THOR simulator. For those, `scripts/functional_train.py` trains each
-on synthetic data with planted structure and checks the model recovers it on
-held-out examples: retrieval R@1 1.000 among 500 distractors, video dialog 1.000
-at identifying which of four streams matches the question, navigation 1.000 at
-acting toward the target's quadrant under REINFORCE. That certifies the wiring,
-not task accuracy.
-
-### Compatibility with the forks
-
-The naming used by those forks is accepted as-is, so this package is a drop-in:
-`util_e` / `sizes` for `embed_dims` / `num_entities`, `prior_flag` /
-`pairwise_flag` / `unary_flag` / `self_flag` for the `use_*` arguments, `Utility`
-for `Modality`, and the AVSD spelling `high_order_utils=[(idx, repeats, connected)]`
-with `size_flag` for `sharing_factor_weights`.
-
-`FGAConfig` takes the same form:
-
-```python
-FGAConfig(share_weights=[
-    {"modalities": [f"history_question_{i}" for i in range(1, 10)],
-     "connected_to": ["answer", "question"]},
-    {"modalities": [f"history_answer_{i}" for i in range(1, 10)],
-     "connected_to": ["answer", "question"]},
-])
-```
-
-The connections sit on the group rather than on each member, since modalities
-sharing weights must agree on them. The indexed `sharing_factor_weights` remains
-the serialized field, so published checkpoints keep loading, and
-`config.share_weights` renders it back as named groups.
 
 ## Data
 
@@ -497,6 +350,159 @@ The two metrics disagreeing is the subject of the
 
 Note, the paper results may slightly vary from the results of this repo, since it is a
 refactored version. For the legacy version, please contact via email.
+
+## Other tasks on the same layer
+
+Visual Dialog above is the paper's own task. The layer is not specific to it —
+these are the published follow-ups, each rebuilt on the same attention.
+
+### Visual Question Answering, with a ternary factor
+
+`fga.tasks.vqa` is a second application: a PyTorch port of
+[HighOrderAtten](https://github.com/idansc/HighOrderAtten) — *High-Order Attention
+Models for Visual Question Answering* (NeurIPS 2017) — rebuilt on the same layer.
+
+```python
+from fga.tasks.vqa import HighOrderAttentionConfig, HighOrderAttentionForVQA
+
+model = HighOrderAttentionForVQA(HighOrderAttentionConfig())
+outputs = model(
+    question_input_ids=question,   # (batch, 15)
+    image_features=regions,        # (batch, 196, 2048)
+    choice_input_ids=choices,      # (batch, 18)
+    labels=answers,
+)
+```
+
+Three modalities are attended jointly — question words, image regions and
+multiple-choice answers — and the distinguishing piece is the **ternary** factor,
+which scores `(region, word, answer)` triples directly:
+
+```
+T[x, y, z] = sum_d  X[x, d] * Y[y, d] * Z[z, d]
+```
+
+A triple can be jointly consistent while no two of its parts stand out on their
+own, so pairwise factors cannot express this. Declare one on any three modalities:
+
+```python
+FactorGraphAttention(
+    embed_dims=[512, 512, 512],
+    num_entities=[15, 196, 18],
+    modality_names=["question", "image", "answer"],
+    ternary_interactions=[("question", "image", "answer")],
+)
+```
+
+Each member then merges one extra potential. Set `use_ternary=False` for the
+pairwise-only ablation the paper reports.
+
+For **open-ended** VQA — no candidate answers, classify over the answer
+vocabulary — use `OpenEndedVQAModel`:
+
+```python
+from fga.tasks.vqa import OpenEndedVQAConfig, OpenEndedVQAModel
+
+model = OpenEndedVQAModel(OpenEndedVQAConfig())
+out = model(question_input_ids=question, image_features=regions, labels=answers)
+```
+
+That leaves two modalities, so there is no ternary factor to apply — and the
+answer can no longer steer where the model looks, which in multiple choice is
+much of what the third modality buys. Set `soft_targets=True` to train against
+the ten human answers as a distribution rather than one label, since VQA accuracy
+credits any answer given by at least three annotators and is graded in the same
+way the dense relevance is for Visual Dialog.
+
+Two notes on the port. The potentials follow **FGA's** conventions — L2-normalized
+embeddings, a batch-normalized interaction grid, learned marginalization — rather
+than the original's `tanh` and learned elementwise scaling. And the interaction
+tensor is `x*y*z` values per example (~53k at the VQA sizes), so it is affordable
+for three modalities but would not be for four.
+
+The fusion head uses Compact Bilinear Pooling, implemented in
+`fga.tasks.vqa.pooling` via the Count Sketch and an FFT, which approximates the
+`d^2` outer product in `O(d + m log m)`.
+
+The data pipeline is included. `scripts/prepare_vqa.py` turns the official VQA v1
+release plus a directory of per-image region features into the files the dataset
+reads, and there is one training script per track:
+
+```bash
+python scripts/prepare_vqa.py --raw_dir vqa/raw --features_dir features --output_dir vqa
+python scripts/run_vqa_mc.py --vqa_dir vqa --output_dir models/vqa-mc \
+    --do_train --do_eval --num_train_epochs 8 --learning_rate 7e-4 --bf16
+```
+
+`vqa_accuracy` implements the official metric: the answer normalization, and the
+average over the ten leave-one-annotator-out subsets.
+
+### Video dialog, retrieval and navigation
+
+One package per task, and the whole set at a glance:
+
+| package | task | modalities | output |
+| --- | --- | --- | --- |
+| `visual_dialog` | rank answers about an image | answers, question, caption, image, 2×history | ranking |
+| `vqa` | VQA, multiple-choice **or** open-ended | question, image, (answers) | classification |
+| `video_dialog` | audio-visual scene-aware dialog | question, 4 video streams, audio | decoder state |
+| `video_retrieval` | text-to-video retrieval | clips, query words | contrastive score |
+| `navigation` | target-driven navigation | target object, observation grid | policy + value |
+
+```python
+from fga.tasks.video_dialog import AVSDConfig, AVSDEncoder
+from fga.tasks.video_retrieval import VideoMatchConfig, VideoMatchModel
+from fga.tasks.navigation import NavigationConfig, NavigationPolicy
+```
+
+They differ in more than their inputs, which is the point: Visual Dialog and VQA
+rank or classify, retrieval trains contrastively with no classifier at all, and
+navigation emits a policy for reinforcement learning. Each exercises the same
+attention differently —
+
+* **video dialog** attends four spatio-temporal streams separately, then fuses
+  them with an LSTM over the stream axis, so moments can be compared after the
+  model has decided what to look at within each;
+* **retrieval** declares no entity counts, so the pairwise factors
+  mean-marginalize and clip/word counts may vary per example;
+* **navigation** carries a recurrent state across an episode and, uniquely here,
+  does *not* pool: the attention re-weights each grid cell and the whole map is
+  flattened into the recurrent state, because the agent must know where the
+  target is, not only that it is present.
+
+`visual_dialog` and `vqa` are trained end to end on real data. The other three
+ship models and tests but no data pipeline — AVSD's features went with the same
+expired links as VisDial's, VideoMatch's were never published, and navigation
+needs the AI2-THOR simulator. For those, `scripts/functional_train.py` trains each
+on synthetic data with planted structure and checks the model recovers it on
+held-out examples: retrieval R@1 1.000 among 500 distractors, video dialog 1.000
+at identifying which of four streams matches the question, navigation 1.000 at
+acting toward the target's quadrant under REINFORCE. That certifies the wiring,
+not task accuracy.
+
+### Compatibility with the forks
+
+The naming used by those forks is accepted as-is, so this package is a drop-in:
+`util_e` / `sizes` for `embed_dims` / `num_entities`, `prior_flag` /
+`pairwise_flag` / `unary_flag` / `self_flag` for the `use_*` arguments, `Utility`
+for `Modality`, and the AVSD spelling `high_order_utils=[(idx, repeats, connected)]`
+with `size_flag` for `sharing_factor_weights`.
+
+`FGAConfig` takes the same form:
+
+```python
+FGAConfig(share_weights=[
+    {"modalities": [f"history_question_{i}" for i in range(1, 10)],
+     "connected_to": ["answer", "question"]},
+    {"modalities": [f"history_answer_{i}" for i in range(1, 10)],
+     "connected_to": ["answer", "question"]},
+])
+```
+
+The connections sit on the group rather than on each member, since modalities
+sharing weights must agree on them. The indexed `sharing_factor_weights` remains
+the serialized field, so published checkpoints keep loading, and
+`config.share_weights` renders it back as named groups.
 
 ## Notes on this refactor
 
