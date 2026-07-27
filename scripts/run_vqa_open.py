@@ -53,7 +53,7 @@ class Arguments:
     vqa_dir: str = field(default="vqa")
     hidden_size: int = field(default=512)
     pooling_dim: int = field(default=16000)
-    loss_type: str = field(default="bce", metadata={"help": "bce | soft_ce | ce"})
+    loss_type: str = field(default="soft_ce", metadata={"help": "soft_ce | bce | ce"})
     gated_tanh: bool = field(default=True)
     mask_padding: bool = field(default=True)
     dropout: float = field(default=0.5)

@@ -66,6 +66,14 @@ class HighOrderAttentionConfig(PretrainedConfig):
             Dropout on the encoders.
         classifier_dropout (`float`, *optional*, defaults to 0.3):
             Dropout before the answer classifier.
+        loss_type (`str`, *optional*, defaults to `"ce"`):
+            `"ce"` supervises one label, which is the objective the paper trains
+            and so the default here. `"soft_ce"` and `"bce"` instead supervise the
+            VQA score every answer earns from the ten annotators, and need
+            `answer_scores`; see [`OpenEndedVQAConfig`]. On open-ended VQA the
+            graded targets are worth about a point, so they are worth trying here
+            too — but changing the default would quietly stop this being a
+            reproduction.
         mask_padding (`bool`, *optional*, defaults to `True`):
             Keep attention off padded question words and candidate slots, and
             zero the encoder state at padded positions. Set to `False` for the
@@ -89,6 +97,7 @@ class HighOrderAttentionConfig(PretrainedConfig):
         use_ternary: bool = True,
         dropout: float = 0.5,
         classifier_dropout: float = 0.3,
+        loss_type: str = "ce",
         mask_padding: bool = True,
         **kwargs,
     ):
@@ -104,6 +113,9 @@ class HighOrderAttentionConfig(PretrainedConfig):
         self.use_ternary = use_ternary
         self.dropout = dropout
         self.classifier_dropout = classifier_dropout
+        if loss_type not in ("bce", "soft_ce", "ce"):
+            raise ValueError(f"loss_type must be one of bce, soft_ce, ce; got {loss_type!r}.")
+        self.loss_type = loss_type
         self.mask_padding = mask_padding
         kwargs.setdefault("pad_token_id", 0)
         super().__init__(**kwargs)
@@ -247,6 +259,7 @@ class HighOrderAttentionForVQA(PreTrainedModel):
         image_features: torch.FloatTensor,
         choice_input_ids: torch.LongTensor,
         labels: Optional[torch.LongTensor] = None,
+        answer_scores: Optional[torch.FloatTensor] = None,
         output_attentions: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ):
@@ -260,6 +273,9 @@ class HighOrderAttentionForVQA(PreTrainedModel):
                 Answer-vocabulary ids of the multiple-choice candidates.
             labels (`torch.LongTensor` of shape `(batch,)`, *optional*):
                 Index into the answer vocabulary of the correct answer.
+            answer_scores (`torch.FloatTensor` of shape `(batch, num_answers)`, *optional*):
+                The VQA score each answer earns from this question's annotators.
+                Required by the graded objectives.
         """
         return_dict = return_dict if return_dict is not None else self.config.return_dict
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -287,7 +303,24 @@ class HighOrderAttentionForVQA(PreTrainedModel):
         joint = self._fuse(self.pool_joint(answer_image, question_image))
 
         logits = self.classifier(joint)
-        loss = F.cross_entropy(logits, labels) if labels is not None else None
+
+        loss = None
+        if self.config.loss_type == "ce":
+            if labels is not None:
+                loss = F.cross_entropy(logits, labels)
+        elif answer_scores is not None:
+            if self.config.loss_type == "bce":
+                loss = F.binary_cross_entropy_with_logits(logits, answer_scores) * logits.size(-1)
+            else:
+                mass = answer_scores.sum(dim=-1, keepdim=True).clamp(min=1e-12)
+                loss = -((answer_scores / mass) * F.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
+        elif self.training:
+            raise ValueError(
+                f"loss_type={self.config.loss_type!r} needs answer_scores, and none were given. Build the "
+                "dataset with num_answers set so it supplies them."
+            )
+        elif labels is not None:
+            loss = F.cross_entropy(logits, labels)
 
         pooled = dict(zip(MODALITY_NAMES, (pooled_question, pooled_image, pooled_answer)))
         if not return_dict:

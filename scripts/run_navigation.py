@@ -111,6 +111,7 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=7e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--entropy_weight", type=float, default=0.01)
+    parser.add_argument("--dropout", type=float, default=0.0, help="On the fused state, against scene overfitting.")
     parser.add_argument("--value_weight", type=float, default=0.5)
     parser.add_argument("--grad_clip", type=float, default=50.0)
     parser.add_argument("--eval_every", type=int, default=5000)
@@ -137,6 +138,7 @@ def main():
             observation_dim=sample.shape[1],
             grid_size=sample.shape[0],
             action_space=len(ACTIONS),
+            dropout=args.dropout,
         )
     ).to(args.device)
     logger.info(f"params: {sum(p.numel() for p in policy.parameters()) / 1e6:.1f}M")

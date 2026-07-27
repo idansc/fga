@@ -45,6 +45,7 @@ class Arguments:
     pooling_dim: int = field(default=16000)
     use_ternary: bool = field(default=True)
     mask_padding: bool = field(default=True, metadata={"help": "Keep attention off padded words and slots."})
+    loss_type: str = field(default="ce", metadata={"help": "ce (the paper's) | soft_ce | bce"})
     dropout: float = field(default=0.5, metadata={"help": "Encoder dropout."})
     classifier_dropout: float = field(default=0.3, metadata={"help": "Dropout before the answer classifier."})
     features_in_memory: bool = field(default=True, metadata={"help": "~18 GB as float16."})
@@ -69,6 +70,7 @@ def main():
             features_h5_path=os.path.join(args.vqa_dir, "features.h5"),
             split=split,
             in_memory=args.features_in_memory and split == "train",
+            num_answers=(len(vocab["answers"]) + 1) if args.loss_type != "ce" else None,
             normalize_features=args.normalize_features,
         )
 
@@ -100,6 +102,7 @@ def main():
                 pooling_dim=args.pooling_dim,
                 use_ternary=args.use_ternary,
                 mask_padding=args.mask_padding,
+                loss_type=args.loss_type,
                 dropout=args.dropout,
                 classifier_dropout=args.classifier_dropout,
             )
@@ -134,6 +137,9 @@ def main():
             for p, qid in zip(picked.tolist(), question_ids[: logits.size(0)].tolist())
         ]
         return {"mc_accuracy": mc_accuracy, "vqa_accuracy": float(np.mean(official))}
+
+    # answer_scores must survive the collator; the model also raises without it.
+    training_args.remove_unused_columns = False
 
     trainer = Trainer(
         model=model,

@@ -58,16 +58,19 @@ class OpenEndedVQAConfig(PretrainedConfig):
         num_regions (`int`, *optional*, defaults to 196): image regions, 14x14.
         max_question_length (`int`, *optional*, defaults to 15): question words.
         pooling_dim (`int`, *optional*, defaults to 16000): CBP sketch size.
-        loss_type (`str`, *optional*, defaults to `"bce"`):
+        loss_type (`str`, *optional*, defaults to `"soft_ce"`):
             How the answer is supervised.
 
-            - `"bce"` — sigmoid outputs and binary cross entropy against the VQA
-              score every answer earns. VQA is graded and often has several
-              acceptable answers, so it is a multi-label regression, not a
-              single-label classification. This is what the 2017 challenge
-              winners identified as the single most useful change.
-            - `"soft_ce"` — softmax cross entropy against the same scores
-              renormalized to a distribution. Keeps the answers competing.
+            - `"soft_ce"` — softmax cross entropy against the VQA score every
+              answer earns, renormalized to a distribution. The default: on VQA v1
+              val over 20 epochs it scores 61.55 against 60.47 for a single label.
+            - `"bce"` — sigmoid outputs and binary cross entropy against the same
+              scores, treating the task as multi-label regression. This is the
+              form the 2017 challenge winners recommend, and the graded targets do
+              help — 60.71 — but here the softmax form is a further 0.8 ahead.
+              With a 3000-way vocabulary read out by an argmax, keeping the
+              answers competing appears to suit the evaluation better than scoring
+              them independently.
             - `"ce"` — cross entropy against one label, the original's objective.
 
             `"bce"` and `"soft_ce"` need `answer_scores`, which the dataset
@@ -95,7 +98,7 @@ class OpenEndedVQAConfig(PretrainedConfig):
         num_regions: int = 196,
         max_question_length: int = 15,
         pooling_dim: int = 16000,
-        loss_type: str = "bce",
+        loss_type: str = "soft_ce",
         gated_tanh: bool = True,
         soft_targets: Optional[bool] = None,
         dropout: float = 0.5,
