@@ -240,7 +240,7 @@ python scripts/run_visual_dialog.py \
 | [Idan/fga](https://huggingface.co/Idan/fga) | The epoch-5 checkpoint below — MRR 66.01 |
 | [Idan/fga-ndcg](https://huggingface.co/Idan/fga-ndcg) | Dense-finetuned — NDCG 69.07 |
 | [Idan/fga-ensemble](https://huggingface.co/Idan/fga-ensemble) | The five members of 5×FGA — MRR 68.43 together |
-| [Idan/fga-vqa](https://huggingface.co/Idan/fga-vqa) | Multiple-choice VQA v1 — 61.40 |
+| [Idan/fga-vqa](https://huggingface.co/Idan/fga-vqa) | Open-ended VQA v1 — 62.07 on val2014 |
 
 The ensemble members are subfolders, so the reported 5×FGA number can be
 reproduced rather than taken on trust:
@@ -421,21 +421,35 @@ python scripts/run_vqa_open.py --vqa_dir vqa --output_dir models/vqa \
     --learning_rate 2e-3 --num_train_epochs 20 --bf16
 ```
 
+#### Results
+
+Trained on **COCO train2014** (230,084 questions), scored on **all of val2014**
+(121,512 questions) with 36 bottom-up region features. `vqa_accuracy` implements
+the official metric — the answer normalization, and the average over the ten
+leave-one-annotator-out subsets.
+
+| objective | 20 epochs | 40 epochs |
+| --- | --- | --- |
+| **`soft_ce`** — softmax against the graded scores | 61.55 | **62.07** |
+| `bce` — sigmoid against the same scores | 60.71 | |
+| `ce` — one label | 60.47 | |
+
+> The published open-ended number, **66.7**, is measured on **test-dev** after
+> training on train2014 **and** val2014. That is a different protocol on both
+> axes: about 50% more training data, and an evaluation set whose labels are not
+> public — the only way to produce that number is a submission to the evaluation
+> server. Training on train and scoring on val is what can be run locally, and
+> 62.07 is that number, not a failed 66.7.
+
 VQA is graded rather than single-label — ten annotators answer each question, and
-an answer earns `min(matches/3, 1)` averaged over the leave-one-annotator-out
-subsets. Supervising those scores instead of one "correct" id is worth about a
-point, and `soft_ce` is the default for that reason:
-
-| objective | VQA v1 val, 20 epochs |
-| --- | --- |
-| **`soft_ce`** — softmax against the graded scores | **61.55** |
-| `bce` — sigmoid against the same scores | 60.71 |
-| `ce` — one label | 60.47 |
-
+an answer earns `min(matches/3, 1)`. Supervising those scores instead of one
+"correct" id is worth about a point, and `soft_ce` is the default for that reason.
 The sigmoid form is what the [2017 challenge writeup](https://arxiv.org/abs/1708.02711)
 recommends; here the softmax form is 0.8 better, which is worth knowing before
-copying the recipe. `vqa_accuracy` implements the official metric — the answer
-normalization and the leave-one-out averaging.
+copying the recipe. Accuracy is flat over the last ten epochs, so 62.07 is
+converged rather than a stopping point.
+
+By answer type: yes/no 78.6, number 37.4, other 54.6.
 
 #### The ternary factor
 

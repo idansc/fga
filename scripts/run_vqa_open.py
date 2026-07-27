@@ -8,9 +8,22 @@ prediction is an unrestricted argmax over the whole answer vocabulary.
 
 ```bash
 python scripts/run_vqa_open.py --vqa_dir vqa --output_dir models/vqa-open \
-    --do_train --do_eval --per_device_train_batch_size 128 \
-    --learning_rate 7e-4 --num_train_epochs 8 --bf16
+    --do_train --do_eval --per_device_train_batch_size 512 \
+    --learning_rate 2e-3 --num_train_epochs 20 --bf16
 ```
+
+The published numbers for this task are measured on **test-dev**, whose labels are
+not public, after training on train2014 *and* val2014. Training here is on
+train2014 alone and scoring is on val2014, which is the only protocol that can be
+run without submitting to the evaluation server -- so the numbers are not directly
+comparable, and the difference is not only the evaluation set but about 50% more
+training data.
+
+`--val_train_fraction` measures how much of that difference is the data. It moves
+that fraction of the val *images* into training and scores on the images left out,
+so the same held-out set can be scored by a model trained with and without the
+extra data. Splitting by image, not by question, keeps every question about a
+given picture on one side.
 """
 
 import json
@@ -22,7 +35,7 @@ from typing import Optional
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import ConcatDataset, Dataset, Subset
 from transformers import HfArgumentParser, Trainer, TrainingArguments, set_seed
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
@@ -61,6 +74,10 @@ class Arguments:
     features_in_memory: bool = field(default=True)
     normalize_features: bool = field(default=True)
     max_eval_questions: Optional[int] = field(default=None)
+    val_train_fraction: float = field(
+        default=0.0,
+        metadata={"help": "Fraction of val *images* to train on, scoring the rest. 0 keeps val untouched."},
+    )
 
 
 def main():
@@ -92,6 +109,22 @@ def main():
         for attr in ("questions", "choices", "labels", "feature_rows", "question_ids"):
             setattr(eval_base, attr, getattr(eval_base, attr)[: args.max_eval_questions])
 
+    # Split val by image so that the same held-out questions can be scored by a
+    # model trained with the rest of val and by one trained without it.
+    val_train_indices, val_eval_indices = None, None
+    if args.val_train_fraction > 0:
+        images = np.unique(eval_base.question_ids // 10)
+        rng = np.random.default_rng(training_args.seed)
+        rng.shuffle(images)
+        held_in = set(images[: int(len(images) * args.val_train_fraction)].tolist())
+        belongs = np.fromiter(((q // 10) in held_in for q in eval_base.question_ids), bool, len(eval_base))
+        val_train_indices = np.flatnonzero(belongs)
+        val_eval_indices = np.flatnonzero(~belongs)
+        logger.info(
+            f"val split by image: {len(val_train_indices)} questions join training, "
+            f"{len(val_eval_indices)} held out over {len(images) - len(held_in)} images"
+        )
+
     sample = eval_base[0]
     num_regions, feature_dim = sample["image_features"].shape
 
@@ -115,7 +148,7 @@ def main():
     logger.info(f"params: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
     answers = vocab["answers"]
-    question_ids = eval_base.question_ids
+    question_ids = eval_base.question_ids if val_eval_indices is None else eval_base.question_ids[val_eval_indices]
 
     def compute_metrics(eval_prediction):
         logits = eval_prediction.predictions
@@ -143,11 +176,20 @@ def main():
     # go missing during training, which is the check that actually catches it.
     training_args.remove_unused_columns = False
 
+    train_dataset = OpenEndedView(train_base) if train_base else None
+    eval_dataset = OpenEndedView(eval_base)
+    if val_eval_indices is not None:
+        eval_dataset = Subset(eval_dataset, val_eval_indices.tolist())
+        if train_dataset is not None:
+            train_dataset = ConcatDataset(
+                [train_dataset, Subset(OpenEndedView(eval_base), val_train_indices.tolist())]
+            )
+
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=OpenEndedView(train_base) if train_base else None,
-        eval_dataset=OpenEndedView(eval_base),
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         data_collator=VQACollator(),
         compute_metrics=compute_metrics,
     )
