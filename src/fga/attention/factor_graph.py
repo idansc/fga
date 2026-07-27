@@ -336,6 +336,7 @@ class FactorGraphAttention(nn.Module):
         self,
         *modalities,
         priors: Optional[Sequence[Optional[torch.Tensor]]] = None,
+        masks: Optional[Sequence[Optional[torch.Tensor]]] = None,
         return_weights: bool = False,
     ):
         """Attend over the modalities.
@@ -353,6 +354,11 @@ class FactorGraphAttention(nn.Module):
                 `(batch * repeats, entities, dim)` for a shared modality.
             priors: one tensor per modality, `(batch, entities)`, or `None` entries
                 for modalities without a prior. Required iff `use_prior`.
+            masks: one boolean tensor per modality, `(batch, entities)`, true at
+                the entities that exist. Padded slots are excluded from the
+                softmax, so no attention mass reaches them. Without a mask a
+                padded sequence is attended over in full -- and padding is not
+                inert, since an encoder still produces a state there.
             return_weights: also return the per-modality attention distributions,
                 `(batch, entities)`, which is what you want for visualizations.
 
@@ -377,20 +383,24 @@ class FactorGraphAttention(nn.Module):
                 else:
                     stacked = torch.stack([modalities[i] for i in group], dim=1)
                     merged.append(stacked.reshape(-1, *stacked.shape[2:]))
-            if priors is not None:
-                merged_priors = []
+            def merge_per_entity(values):
+                """The same regrouping for the `(batch, entities)` side tensors."""
+                merged_values = []
                 for group in plan.groups:
-                    if len(group) == 1:
-                        merged_priors.append(priors[group[0]])
-                    elif priors[group[0]] is None:
-                        merged_priors.append(None)
+                    if len(group) == 1 or values[group[0]] is None:
+                        merged_values.append(values[group[0]])
                     else:
-                        stacked = torch.stack([priors[i] for i in group], dim=1)
-                        merged_priors.append(stacked.reshape(-1, *stacked.shape[2:]))
-                priors = merged_priors
+                        stacked = torch.stack([values[i] for i in group], dim=1)
+                        merged_values.append(stacked.reshape(-1, *stacked.shape[2:]))
+                return merged_values
+
+            if priors is not None:
+                priors = merge_per_entity(priors)
+            if masks is not None:
+                masks = merge_per_entity(masks)
             modalities = merged
 
-            result = self._attend(modalities, priors, return_weights)
+            result = self._attend(modalities, priors, masks, return_weights)
             attention, weights = result if return_weights else (result, None)
 
             # Split the shared entries back out, in the caller's modality order.
@@ -414,9 +424,9 @@ class FactorGraphAttention(nn.Module):
                 return per_modality, per_modality_weights
             return per_modality
 
-        return self._attend(modalities, priors, return_weights)
+        return self._attend(modalities, priors, masks, return_weights)
 
-    def _attend(self, modalities, priors, return_weights: bool):
+    def _attend(self, modalities, priors, masks, return_weights: bool):
         """Attend over one tensor per internal entry, shared groups already merged."""
         if self.n_modalities != len(modalities):
             raise ValueError(
@@ -426,6 +436,8 @@ class FactorGraphAttention(nn.Module):
         assert (priors is None and not self.use_prior) or (
             priors is not None and self.use_prior and len(priors) == self.n_modalities
         )
+        if masks is not None and len(masks) != self.n_modalities:
+            raise ValueError(f"Got {len(masks)} masks for {self.n_modalities} modalities.")
         # Copy so that callers keep ownership of their lists; `size_force` rewrites entries.
         modalities = list(modalities)
         priors = list(priors) if priors is not None else None
@@ -511,6 +523,11 @@ class FactorGraphAttention(nn.Module):
                 dim=1,
             )
             logits = self.reduce_potentials[i](factors.transpose(1, 2)).squeeze(-1)
+            if masks is not None and masks[i] is not None:
+                mask = masks[i].to(torch.bool)
+                # An all-padding row would softmax to NaN; leave those uniform.
+                mask = mask | ~mask.any(dim=1, keepdim=True)
+                logits = logits.masked_fill(~mask, torch.finfo(logits.dtype).min)
             weights = F.softmax(logits, dim=1)
             attention.append(torch.bmm(modalities[i].transpose(1, 2), weights.unsqueeze(2)).squeeze(2))
             if return_weights:

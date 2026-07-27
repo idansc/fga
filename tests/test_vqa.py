@@ -324,3 +324,96 @@ def test_ternary_with_an_unknown_name_is_a_clear_error():
             modality_names=["question", "image", "answer"],
             ternary_interactions=[("question", "image", "answr")],
         )
+
+
+# --- the official metric -------------------------------------------------
+
+
+def test_answer_normalization_matches_the_official_rewrites():
+    from fga.tasks.vqa.data import normalize_answer
+
+    assert normalize_answer("Two") == "2"
+    assert normalize_answer("a dog.") == "dog"
+    assert normalize_answer("the man's hat") == "man's hat"
+    assert normalize_answer("dont know") == "don't know"
+    assert normalize_answer("1,000") == "1000"
+    assert normalize_answer("3.5") == "3.5"  # decimals keep their point
+
+
+def test_vqa_accuracy_leaves_one_annotator_out():
+    """Three of ten is 0.9, not 1.0: each annotator is scored against the other nine."""
+    from fga.tasks.vqa.data import vqa_accuracy
+
+    humans = ["cat"] * 3 + ["dog"] * 7
+    assert vqa_accuracy("cat", humans) == pytest.approx(0.9)
+    assert vqa_accuracy("dog", humans) == pytest.approx(1.0)
+    assert vqa_accuracy("bird", humans) == pytest.approx(0.0)
+    # Unanimous answers are unaffected by dropping one vote.
+    assert vqa_accuracy("cat", ["cat"] * 10) == pytest.approx(1.0)
+
+
+def test_vqa_accuracy_normalizes_both_sides():
+    from fga.tasks.vqa.data import vqa_accuracy
+
+    assert vqa_accuracy("2", ["two"] * 10) == pytest.approx(1.0)
+    assert vqa_accuracy("2", ["two"] * 10, normalize=False) == pytest.approx(0.0)
+
+
+# --- the question encoder ------------------------------------------------
+
+
+def test_question_encoder_zeroes_padded_positions(tiny_config):
+    from fga.tasks.vqa.modeling_hoa import QuestionEncoder
+
+    encoder = QuestionEncoder(tiny_config).eval()
+    ids = torch.tensor([[3, 4, 5, 0, 0]][: 1] * 2)[:, : tiny_config.max_question_length]
+    ids[:, -1] = 0
+    with torch.no_grad():
+        states = encoder(ids)
+    assert torch.all(states[ids == 0] == 0)
+    assert not torch.all(states[ids != 0] == 0)
+
+
+def test_question_encoder_runs_word_and_phrase_streams(tiny_config):
+    """Half the state comes from the embeddings, half from the convolution."""
+    from fga.tasks.vqa.modeling_hoa import QuestionEncoder
+
+    encoder = QuestionEncoder(tiny_config).eval()
+    assert encoder.word_lstm.hidden_size + encoder.phrase_lstm.hidden_size == tiny_config.hidden_size
+    assert not encoder.word_lstm.bidirectional and not encoder.phrase_lstm.bidirectional
+
+
+def test_cbp_places_a_pair_in_the_bin_the_sketch_predicts():
+    """The exact statement, not a statistical one.
+
+    Count Sketch sends feature `i` of `x` to bin `h1[i]` with sign `s1[i]`, and
+    the sketch of an outer product is the circular convolution of the two
+    sketches — so a single pair `(i, j)` must land in bin `(h1[i] + h2[j]) % d`
+    carrying `s1[i] * s2[j]`. Getting the convolution backwards, or dropping a
+    sign, still passes an inner-product correlation test; it fails this one.
+    """
+    pooling = CompactBilinearPooling(4, 5, output_dim=8, seed=0).eval()
+
+    for i in range(4):
+        for j in range(5):
+            x, y = torch.zeros(1, 4), torch.zeros(1, 5)
+            x[0, i], y[0, j] = 1.0, 1.0
+            with torch.no_grad():
+                out = pooling(x, y)[0]
+
+            expected_bin = int((pooling.x_index[i] + pooling.y_index[j]) % 8)
+            expected_sign = float(pooling.x_sign[i] * pooling.y_sign[j])
+            assert torch.argmax(out.abs()).item() == expected_bin, (i, j)
+            torch.testing.assert_close(out[expected_bin], torch.tensor(expected_sign), atol=1e-5, rtol=1e-4)
+            # Nothing meaningful anywhere else.
+            other = torch.cat([out[:expected_bin], out[expected_bin + 1 :]])
+            assert other.abs().max() < 1e-5, (i, j, other.abs().max().item())
+
+
+def test_cbp_is_bilinear_in_each_argument():
+    """Scaling an input scales the sketch, which the convolution must preserve."""
+    pooling = CompactBilinearPooling(6, 6, output_dim=32, seed=0).eval()
+    x, y = torch.randn(2, 6), torch.randn(2, 6)
+    with torch.no_grad():
+        torch.testing.assert_close(pooling(3.0 * x, y), 3.0 * pooling(x, y), atol=1e-4, rtol=1e-4)
+        torch.testing.assert_close(pooling(x, -2.0 * y), -2.0 * pooling(x, y), atol=1e-4, rtol=1e-4)

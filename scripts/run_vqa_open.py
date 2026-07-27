@@ -53,7 +53,13 @@ class Arguments:
     vqa_dir: str = field(default="vqa")
     hidden_size: int = field(default=512)
     pooling_dim: int = field(default=16000)
+    loss_type: str = field(default="bce", metadata={"help": "bce | soft_ce | ce"})
+    gated_tanh: bool = field(default=True)
+    mask_padding: bool = field(default=True)
+    dropout: float = field(default=0.5)
+    classifier_dropout: float = field(default=0.3)
     features_in_memory: bool = field(default=True)
+    normalize_features: bool = field(default=True)
     max_eval_questions: Optional[int] = field(default=None)
 
 
@@ -67,12 +73,17 @@ def main():
     with open(os.path.join(args.vqa_dir, "val_human_answers.json")) as f:
         human_answers = {int(k): v for k, v in json.load(f).items()}
 
+    num_answers = len(vocab["answers"]) + 1  # 0 is pad/OOV
+
     def make(split, in_memory):
         return VQAMultipleChoiceDataset(
             vqa_h5_path=os.path.join(args.vqa_dir, "vqa_mc.h5"),
             features_h5_path=os.path.join(args.vqa_dir, "features.h5"),
             split=split,
             in_memory=in_memory,
+            # Graded objectives need the per-answer scores; "ce" does not.
+            num_answers=num_answers if args.loss_type != "ce" else None,
+            normalize_features=args.normalize_features,
         )
 
     train_base = make("train", args.features_in_memory) if training_args.do_train else None
@@ -87,13 +98,18 @@ def main():
     model = OpenEndedVQAModel(
         OpenEndedVQAConfig(
             vocab_size=len(vocab["words"]) + 1,
-            num_answers=len(vocab["answers"]) + 1,
+            num_answers=num_answers,
             hidden_size=args.hidden_size,
             word_embed_dim=args.hidden_size,
             image_feature_dim=feature_dim,
             num_regions=num_regions,
             max_question_length=eval_base.questions.shape[1],
             pooling_dim=args.pooling_dim,
+            loss_type=args.loss_type,
+            gated_tanh=args.gated_tanh,
+            mask_padding=args.mask_padding,
+            dropout=args.dropout,
+            classifier_dropout=args.classifier_dropout,
         )
     )
     logger.info(f"params: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
@@ -119,6 +135,13 @@ def main():
             for p, qid in zip(picked.tolist(), question_ids[: logits.size(0)].tolist())
         ]
         return {"exact_accuracy": exact, "vqa_accuracy": float(np.mean(official))}
+
+    # `answer_scores` is in the model's forward signature, so the Trainer would
+    # keep it; this is explicit anyway because the equivalent column in the
+    # Visual Dialog dense path was silently dropped once and the loss trained on
+    # nothing while still looking plausible. The model also raises if the scores
+    # go missing during training, which is the check that actually catches it.
+    training_args.remove_unused_columns = False
 
     trainer = Trainer(
         model=model,
