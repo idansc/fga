@@ -401,27 +401,48 @@ refactored version. For the legacy version, please contact via email.
 Visual Dialog above is the paper's own task. The layer is not specific to it —
 these are the published follow-ups, each rebuilt on the same attention.
 
-### Visual Question Answering, with a ternary factor
+### Visual Question Answering
 
-`fga.tasks.vqa` is a second application: a PyTorch port of
-[HighOrderAtten](https://github.com/idansc/HighOrderAtten) — *High-Order Attention
-Models for Visual Question Answering* (NeurIPS 2017) — rebuilt on the same layer.
+`fga.tasks.vqa` is a second application, on VQA v1. Use **`OpenEndedVQAModel`**:
+the question and the image are attended, and the answer is chosen from the answer
+vocabulary.
 
 ```python
-from fga.tasks.vqa import HighOrderAttentionConfig, HighOrderAttentionForVQA
+from fga.tasks.vqa import OpenEndedVQAConfig, OpenEndedVQAModel
 
-model = HighOrderAttentionForVQA(HighOrderAttentionConfig())
-outputs = model(
-    question_input_ids=question,   # (batch, 15)
-    image_features=regions,        # (batch, 196, 2048)
-    choice_input_ids=choices,      # (batch, 18)
-    labels=answers,
-)
+model = OpenEndedVQAModel(OpenEndedVQAConfig())
+out = model(question_input_ids=question, image_features=regions, answer_scores=scores)
 ```
 
-Three modalities are attended jointly — question words, image regions and
-multiple-choice answers — and the distinguishing piece is the **ternary** factor,
-which scores `(region, word, answer)` triples directly:
+```bash
+python scripts/prepare_vqa.py --raw_dir vqa/raw --features_dir features --output_dir vqa
+python scripts/run_vqa_open.py --vqa_dir vqa --output_dir models/vqa \
+    --do_train --do_eval --per_device_train_batch_size 512 \
+    --learning_rate 2e-3 --num_train_epochs 20 --bf16
+```
+
+VQA is graded rather than single-label — ten annotators answer each question, and
+an answer earns `min(matches/3, 1)` averaged over the leave-one-annotator-out
+subsets. Supervising those scores instead of one "correct" id is worth about a
+point, and `soft_ce` is the default for that reason:
+
+| objective | VQA v1 val, 20 epochs |
+| --- | --- |
+| **`soft_ce`** — softmax against the graded scores | **61.55** |
+| `bce` — sigmoid against the same scores | 60.71 |
+| `ce` — one label | 60.47 |
+
+The sigmoid form is what the [2017 challenge writeup](https://arxiv.org/abs/1708.02711)
+recommends; here the softmax form is 0.8 better, which is worth knowing before
+copying the recipe. `vqa_accuracy` implements the official metric — the answer
+normalization and the leave-one-out averaging.
+
+#### The ternary factor
+
+The layer supports a factor over three modalities at once, from
+[HighOrderAtten](https://github.com/idansc/HighOrderAtten) — *High-Order Attention
+Models for Visual Question Answering* (NeurIPS 2017). It scores
+`(region, word, answer)` triples directly:
 
 ```
 T[x, y, z] = sum_d  X[x, d] * Y[y, d] * Z[z, d]
@@ -439,48 +460,23 @@ FactorGraphAttention(
 )
 ```
 
-Each member then merges one extra potential. Set `use_ternary=False` for the
-pairwise-only ablation the paper reports.
+Each member then merges one extra potential. The interaction tensor is `x*y*z`
+values per example — about 53k at VQA sizes — so it is affordable for three
+modalities and would not be for four.
 
-For **open-ended** VQA — no candidate answers, classify over the answer
-vocabulary — use `OpenEndedVQAModel`:
-
-```python
-from fga.tasks.vqa import OpenEndedVQAConfig, OpenEndedVQAModel
-
-model = OpenEndedVQAModel(OpenEndedVQAConfig())
-out = model(question_input_ids=question, image_features=regions, labels=answers)
-```
-
-That leaves two modalities, so there is no ternary factor to apply — and the
-answer can no longer steer where the model looks, which in multiple choice is
-much of what the third modality buys. Set `soft_targets=True` to train against
-the ten human answers as a distribution rather than one label, since VQA accuracy
-credits any answer given by at least three annotators and is graded in the same
-way the dense relevance is for Visual Dialog.
-
-Two notes on the port. The potentials follow **FGA's** conventions — L2-normalized
-embeddings, a batch-normalized interaction grid, learned marginalization — rather
-than the original's `tanh` and learned elementwise scaling. And the interaction
-tensor is `x*y*z` values per example (~53k at the VQA sizes), so it is affordable
-for three modalities but would not be for four.
+`HighOrderAttentionForVQA` uses it, taking the eighteen multiple-choice candidates
+as the third modality. **It is not the recommended model**, and the results above
+are the open-ended one. Its architecture has been checked against the original
+line by line — the masked softmax, the two-stream question encoder, the count
+sketch bins and signs, the objective, the image encoder — and it reaches 61.4,
+but it scores *below* the open-ended model despite being handed eighteen
+candidates to choose between, which it should not. Something in that model is
+wrong and is not yet found, so it is kept for the factor rather than offered as a
+reproduction.
 
 The fusion head uses Compact Bilinear Pooling, implemented in
 `fga.tasks.vqa.pooling` via the Count Sketch and an FFT, which approximates the
 `d^2` outer product in `O(d + m log m)`.
-
-The data pipeline is included. `scripts/prepare_vqa.py` turns the official VQA v1
-release plus a directory of per-image region features into the files the dataset
-reads, and there is one training script per track:
-
-```bash
-python scripts/prepare_vqa.py --raw_dir vqa/raw --features_dir features --output_dir vqa
-python scripts/run_vqa_mc.py --vqa_dir vqa --output_dir models/vqa-mc \
-    --do_train --do_eval --num_train_epochs 8 --learning_rate 7e-4 --bf16
-```
-
-`vqa_accuracy` implements the official metric: the answer normalization, and the
-average over the ten leave-one-annotator-out subsets.
 
 ### Video dialog, retrieval and navigation
 
@@ -489,7 +485,7 @@ One package per task, and the whole set at a glance:
 | package | task | modalities | output |
 | --- | --- | --- | --- |
 | `visual_dialog` | rank answers about an image | answers, question, caption, image, 2×history | ranking |
-| `vqa` | VQA, multiple-choice **or** open-ended | question, image, (answers) | classification |
+| `vqa` | open-ended VQA | question, image | classification |
 | `video_dialog` | audio-visual scene-aware dialog | question, 4 video streams, audio | decoder state |
 | `video_retrieval` | text-to-video retrieval | clips, query words | contrastive score |
 | `navigation` | target-driven navigation | target object, observation grid | policy + value |
