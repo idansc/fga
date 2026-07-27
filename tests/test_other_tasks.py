@@ -5,6 +5,9 @@ a contrastive score, and a policy — so together they check that the layer is n
 quietly specialized to answer ranking.
 """
 
+import json
+
+import numpy as np
 import pytest
 import torch
 
@@ -172,8 +175,9 @@ def test_navigation_attention_maps_the_observation_grid():
             observation=torch.randn(BATCH, 9, 32),
             output_attentions=True,
         )
-    assert [tuple(a.shape) for a in out.attentions] == [(BATCH, 1), (BATCH, 9)]
-    torch.testing.assert_close(out.attentions[1].sum(-1), torch.ones(BATCH))
+    # target, memory, action are single vectors; the observation is the grid.
+    assert [tuple(a.shape) for a in out.attentions] == [(BATCH, 1), (BATCH, 1), (BATCH, 1), (BATCH, 9)]
+    torch.testing.assert_close(out.attentions[3].sum(-1), torch.ones(BATCH))
 
 
 def test_navigation_gradients_reach_the_attention():
@@ -181,7 +185,8 @@ def test_navigation_gradients_reach_the_attention():
     policy = NavigationPolicy(config).train()
     out = policy(target_embeds=torch.randn(BATCH, 1, 16), observation=torch.randn(BATCH, 9, 32))
     (out.action_logits.sum() + out.value.sum()).backward()
-    assert policy.attention.un_models[1].embed.weight.grad is not None
+    # The grid-against-target pairwise factor is the one that steers the map.
+    assert policy.attention.pp_models["0_3"].embed_X.weight.grad is not None
 
 
 @pytest.mark.parametrize(
@@ -214,9 +219,37 @@ def test_navigation_keeps_the_spatial_map_rather_than_pooling_it():
     with torch.no_grad():
         out = policy(target_embeds=torch.randn(BATCH, 1, 16), observation=torch.randn(BATCH, 9, 32))
 
-    assert out.attended_grid.shape == (BATCH, config.grid_size, config.hidden_size)
-    # The recurrent layer consumes the whole map plus the pooled target.
-    assert policy.recurrent.input_size == config.grid_size * config.hidden_size + config.hidden_size
+    assert out.attended_grid.shape == (BATCH, config.grid_size, config.attention_dim)
+    # The recurrent layer consumes the whole map, and nothing else.
+    assert policy.recurrent.input_size == config.grid_size * config.attention_dim
+
+
+def test_navigation_attends_memory_and_the_previous_action():
+    """The grid is scored against three things, not just the target.
+
+    The original computes a similarity map per cell against the target, the
+    recurrent memory *and* the last action, then mixes them. An earlier version of
+    this port attended the target alone, so the agent could not use where it had
+    already been or what it had just done.
+    """
+    config = NavigationConfig(target_dim=16, observation_dim=32, grid_size=9, hidden_size=32)
+    policy = NavigationPolicy(config).eval()
+    assert list(policy.attention.modality_names) == ["target", "memory", "action", "observation"]
+
+    target = torch.randn(BATCH, 1, 16)
+    observation = torch.randn(BATCH, 9, 32)
+    memory = (torch.randn(BATCH, 32), torch.randn(BATCH, 32))
+    action = torch.zeros(BATCH, config.action_space)
+    action[:, 2] = 1.0
+
+    with torch.no_grad():
+        base = policy(target_embeds=target, observation=observation)
+        with_memory = policy(target_embeds=target, observation=observation, hidden_state=memory)
+        with_action = policy(target_embeds=target, observation=observation, prev_action=action)
+
+    # Each of the two extra modalities moves the attention over the grid.
+    assert not torch.allclose(base.attended_grid, with_memory.attended_grid, atol=1e-5)
+    assert not torch.allclose(base.attended_grid, with_action.attended_grid, atol=1e-5)
 
 
 def test_navigation_distinguishes_where_the_target_sits():
@@ -236,3 +269,97 @@ def test_navigation_distinguishes_where_the_target_sits():
         a = policy(target_embeds=target, observation=left).action_logits
         b = policy(target_embeds=target, observation=right).action_logits
     assert not torch.allclose(a, b, atol=1e-4)
+
+
+# --- the offline navigation environment ---
+
+
+def _toy_scene(tmp_path):
+    """A 3x1 corridor of poses, all facing one way, with a target at the end."""
+    import h5py
+
+    directory = tmp_path / "FloorPlan1_physics"
+    directory.mkdir()
+    poses = ["0.00|0.00|0|0", "0.00|0.25|0|0", "0.00|0.50|0|0"]
+    with open(directory / "graph.json", "w") as handle:
+        json.dump(
+            {
+                "nodes": [{"id": p} for p in poses],
+                "links": [
+                    {"source": poses[0], "target": poses[1]},
+                    {"source": poses[1], "target": poses[2]},
+                ],
+            },
+            handle,
+        )
+    with open(directory / "visible_object_map.json", "w") as handle:
+        json.dump({"Toaster|+00.1|+00.2|+00.3": [poses[2]]}, handle)
+    with h5py.File(directory / "resnet18_featuremap.hdf5", "w") as handle:
+        for i, p in enumerate(poses):
+            handle.create_dataset(p, data=np.full((1, 4, 2, 2), float(i), dtype=np.float32))
+    return directory, poses
+
+
+def test_offline_scene_reads_poses_visibility_and_features(tmp_path):
+    from fga.tasks.navigation import OfflineScene
+
+    directory, poses = _toy_scene(tmp_path)
+    scene = OfflineScene(str(directory))
+
+    assert len(scene) == 3
+    assert scene.targets == ["Toaster"]          # only classes the scene contains
+    assert scene.sees(poses[2], "Toaster") and not scene.sees(poses[0], "Toaster")
+    # (1, C, H, W) becomes (cells, channels), which is what the policy consumes.
+    assert scene.feature(poses[1]).shape == (4, 4)
+
+
+def test_offline_scene_actions_respect_the_graph(tmp_path):
+    """MoveAhead only follows an edge; walls are missing edges, not geometry."""
+    from fga.tasks.navigation import OfflineScene
+
+    directory, poses = _toy_scene(tmp_path)
+    scene = OfflineScene(str(directory))
+
+    assert scene.next_state(poses[0], "MoveAhead") == poses[1]
+    assert scene.next_state(poses[2], "MoveAhead") is None      # end of the corridor
+    assert scene.next_state(poses[0], "RotateLeft") is None     # that pose is not cached
+    assert scene.next_state(poses[0], "LookUp") is None         # already at horizon 0
+
+
+def test_episode_rewards_only_a_correct_done(tmp_path):
+    from fga.tasks.navigation import NavigationEpisode, OfflineScene
+    from fga.tasks.navigation.environment import ACTIONS
+
+    directory, poses = _toy_scene(tmp_path)
+    scene = OfflineScene(str(directory))
+    done = ACTIONS.index("Done")
+
+    early = NavigationEpisode(scene, "Toaster", poses[0])
+    reward, finished, _ = early.step(done)
+    assert finished and not early.success and reward < 0
+
+    arrived = NavigationEpisode(scene, "Toaster", poses[2])
+    reward, finished, _ = arrived.step(done)
+    assert finished and arrived.success and reward == 5.0
+
+
+def test_episode_shortest_route_counts_the_done_action(tmp_path):
+    from fga.tasks.navigation import NavigationEpisode, OfflineScene
+
+    directory, poses = _toy_scene(tmp_path)
+    scene = OfflineScene(str(directory))
+    # Two moves to reach the visible pose, plus the Done that claims it.
+    assert NavigationEpisode(scene, "Toaster", poses[0]).optimal_steps() == 3
+    assert NavigationEpisode(scene, "Toaster", poses[2]).optimal_steps() == 1
+
+
+def test_episode_stops_at_max_steps(tmp_path):
+    from fga.tasks.navigation import NavigationEpisode, OfflineScene
+    from fga.tasks.navigation.environment import ACTIONS
+
+    directory, poses = _toy_scene(tmp_path)
+    episode = NavigationEpisode(OfflineScene(str(directory)), "Toaster", poses[0], max_steps=2)
+    forward = ACTIONS.index("MoveAhead")
+    episode.step(forward)
+    _, finished, _ = episode.step(forward)
+    assert finished and not episode.success

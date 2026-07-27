@@ -35,8 +35,9 @@ from ...attention import FactorGraphAttention
 
 __all__ = ["MODALITY_NAMES", "NavigationConfig", "NavigationPolicy", "NavigationOutput"]
 
-#: Modality order.
-MODALITY_NAMES = ("target", "observation")
+#: Modality order. The observation is a spatial grid; the other three are single
+#: vectors the grid is scored against.
+MODALITY_NAMES = ("target", "memory", "action", "observation")
 
 
 class NavigationConfig(PretrainedConfig):
@@ -49,6 +50,11 @@ class NavigationConfig(PretrainedConfig):
             Channel count of the observation grid, e.g. a ResNet layer.
         grid_size (`int`, *optional*, defaults to 49):
             Spatial cells in the observation, 7x7 for a ResNet conv grid.
+        attention_dim (`int`, *optional*, defaults to 64):
+            Channels every modality is projected to before being attended. Kept
+            separate from `hidden_size` because the whole weighted grid enters the
+            recurrence: at 64 channels that is `64 x 49 = 3136` inputs, where
+            projecting to `hidden_size` would make it 25,600.
         num_target_tokens (`int`, *optional*, defaults to 1):
             Tokens describing the target. A single embedding for one object noun.
         hidden_size (`int`, *optional*, defaults to 512):
@@ -66,6 +72,7 @@ class NavigationConfig(PretrainedConfig):
         target_dim: int = 300,
         observation_dim: int = 512,
         grid_size: int = 49,
+        attention_dim: int = 64,
         num_target_tokens: int = 1,
         hidden_size: int = 512,
         action_space: int = 6,
@@ -75,6 +82,7 @@ class NavigationConfig(PretrainedConfig):
         self.target_dim = target_dim
         self.observation_dim = observation_dim
         self.grid_size = grid_size
+        self.attention_dim = attention_dim
         self.num_target_tokens = num_target_tokens
         self.hidden_size = hidden_size
         self.action_space = action_space
@@ -133,20 +141,35 @@ class NavigationPolicy(PreTrainedModel):
     def __init__(self, config: NavigationConfig):
         super().__init__(config)
         hidden = config.hidden_size
+        embed = config.attention_dim
 
-        self.target_projection = nn.Linear(config.target_dim, hidden)
-        self.observation_projection = nn.Conv1d(config.observation_dim, hidden, 1)
+        # Everything the grid is scored against is a single vector: the target
+        # noun, the recurrent state carried from the last step, and the action
+        # just taken. The agent needs all three -- where it is going, where it has
+        # been, and what it just did.
+        self.target_projection = nn.Linear(config.target_dim, embed)
+        self.memory_projection = nn.Linear(hidden, embed)
+        self.action_projection = nn.Linear(config.action_space, embed)
+        self.observation_projection = nn.Linear(config.observation_dim, embed)
 
+        # Pairwise factors only, which is exactly what the original computes: one
+        # similarity map of the grid against each of target, memory and action,
+        # mixed into the attention logits. Unary and self factors would be dead
+        # weight here -- only the grid's attention is consumed, and the three
+        # single-vector modalities attend trivially over one entity.
         self.attention = FactorGraphAttention(
-            embed_dims=[hidden, hidden],
-            num_entities=[config.num_target_tokens, config.grid_size],
+            embed_dims=[embed, embed, embed, embed],
+            num_entities=[config.num_target_tokens, 1, 1, config.grid_size],
             modality_names=list(MODALITY_NAMES),
+            use_unary=False,
+            use_self=False,
         )
 
         # The episode is sequential, so the attended map feeds a recurrent state.
-        # Its input is the flattened grid, not a pooled vector: the policy has to
-        # know where the target is, not only that it is present.
-        self.recurrent = nn.LSTMCell(config.grid_size * hidden + hidden, hidden)
+        # Its input is the flattened grid alone, as in the original: the policy
+        # has to know where the target is, not only that it is present, and the
+        # target reaches it by having steered the attention.
+        self.recurrent = nn.LSTMCell(config.grid_size * embed, hidden)
         self.dropout = nn.Dropout(config.dropout)
         self.actor = nn.Linear(hidden, config.action_space)
         self.critic = nn.Linear(hidden, 1)
@@ -167,6 +190,7 @@ class NavigationPolicy(PreTrainedModel):
         target_embeds: torch.FloatTensor,
         observation: torch.FloatTensor,
         hidden_state: Optional[Tuple[torch.FloatTensor, torch.FloatTensor]] = None,
+        prev_action: Optional[torch.FloatTensor] = None,
         output_attentions: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ):
@@ -178,21 +202,32 @@ class NavigationPolicy(PreTrainedModel):
                 Egocentric visual features, flattened over the spatial grid.
             hidden_state (`Tuple[torch.FloatTensor, torch.FloatTensor]`, *optional*):
                 Recurrent state from the previous step; zeros at episode start.
+            prev_action (`torch.FloatTensor` of shape `(batch, action_space)`, *optional*):
+                The previous step's action distribution. Zeros at episode start,
+                which is what the original passes on the first step.
         """
         return_dict = return_dict if return_dict is not None else self.config.return_dict
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
 
+        batch = observation.size(0)
+        if hidden_state is None:
+            zeros = observation.new_zeros(batch, self.config.hidden_size)
+            hidden_state = (zeros, zeros.clone())
+        if prev_action is None:
+            prev_action = observation.new_zeros(batch, self.config.action_space)
+
         target = self.target_projection(target_embeds)
-        grid = self.observation_projection(observation.transpose(1, 2)).transpose(1, 2)
+        memory = self.memory_projection(hidden_state[0]).unsqueeze(1)
+        action = self.action_projection(prev_action).unsqueeze(1)
+        grid = self.observation_projection(observation)
 
-        attended, weights = self.attention(target, grid, return_weights=True)
-        pooled_target, pooled_observation = attended
+        attended, weights = self.attention(target, memory, action, grid, return_weights=True)
 
-        # Scale each cell by its attention and keep the map; only the target,
-        # which has no spatial extent, is pooled.
-        attended_grid = weights[1].unsqueeze(-1) * grid
-        fused = torch.cat((attended_grid.flatten(1), pooled_target), dim=-1)
-        hidden_state = self.recurrent(fused, hidden_state)
+        # Scale each cell by its attention and keep the map. The three
+        # single-vector modalities have nothing to pool -- their attention is
+        # trivially 1 -- and exist to score the grid.
+        attended_grid = weights[3].unsqueeze(-1) * grid
+        hidden_state = self.recurrent(attended_grid.flatten(1), hidden_state)
         state = self.dropout(hidden_state[0])
 
         action_logits = self.actor(state)
