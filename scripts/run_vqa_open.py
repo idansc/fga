@@ -8,9 +8,21 @@ prediction is an unrestricted argmax over the whole answer vocabulary.
 
 ```bash
 python scripts/run_vqa_open.py --vqa_dir vqa --output_dir models/vqa-open \
-    --do_train --do_eval --per_device_train_batch_size 128 \
-    --learning_rate 7e-4 --num_train_epochs 8 --bf16
+    --do_train --do_eval --per_device_train_batch_size 512 \
+    --learning_rate 2e-3 --num_train_epochs 20 --bf16
 ```
+
+The published numbers for this task are measured on **test-dev**, whose labels are
+not public, after training on train2014 *and* val2014. Training here is on
+train2014 alone and scoring is on val2014, which is the only protocol that can be
+run without submitting to the evaluation server -- so the numbers are not directly
+comparable, and the difference is not only the evaluation set but about 50% more
+training data.
+
+`--train_on_val` trains on train2014 + val2014, which is the protocol behind the
+published numbers. It leaves nothing to score locally: test-dev answers are not
+public, so such a run writes predictions for the evaluation server rather than an
+accuracy.
 """
 
 import json
@@ -22,7 +34,7 @@ from typing import Optional
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import ConcatDataset, Dataset
 from transformers import HfArgumentParser, Trainer, TrainingArguments, set_seed
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
@@ -53,7 +65,7 @@ class Arguments:
     vqa_dir: str = field(default="vqa")
     hidden_size: int = field(default=512)
     pooling_dim: int = field(default=16000)
-    loss_type: str = field(default="bce", metadata={"help": "bce | soft_ce | ce"})
+    loss_type: str = field(default="soft_ce", metadata={"help": "soft_ce | bce | ce"})
     gated_tanh: bool = field(default=True)
     mask_padding: bool = field(default=True)
     dropout: float = field(default=0.5)
@@ -61,6 +73,13 @@ class Arguments:
     features_in_memory: bool = field(default=True)
     normalize_features: bool = field(default=True)
     max_eval_questions: Optional[int] = field(default=None)
+    train_on_val: bool = field(
+        default=False,
+        metadata={
+            "help": "Train on train2014 + val2014, the protocol behind the published test-dev numbers. "
+            "There is then no local scoring set: test-dev answers are not public."
+        },
+    )
 
 
 def main():
@@ -91,6 +110,12 @@ def main():
     if args.max_eval_questions:
         for attr in ("questions", "choices", "labels", "feature_rows", "question_ids"):
             setattr(eval_base, attr, getattr(eval_base, attr)[: args.max_eval_questions])
+
+    # train2014 + val2014 is the protocol the published test-dev numbers use.
+    # Nothing is held back: scoring happens on test-dev, whose answers are not
+    # public, so a run with this flag produces predictions rather than a number.
+    if args.train_on_val:
+        logger.info("training on train2014 + val2014; there is no local scoring set")
 
     sample = eval_base[0]
     num_regions, feature_dim = sample["image_features"].shape
@@ -143,11 +168,16 @@ def main():
     # go missing during training, which is the check that actually catches it.
     training_args.remove_unused_columns = False
 
+    train_dataset = OpenEndedView(train_base) if train_base else None
+    eval_dataset = OpenEndedView(eval_base)
+    if args.train_on_val and train_dataset is not None:
+        train_dataset = ConcatDataset([train_dataset, OpenEndedView(eval_base)])
+
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=OpenEndedView(train_base) if train_base else None,
-        eval_dataset=OpenEndedView(eval_base),
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         data_collator=VQACollator(),
         compute_metrics=compute_metrics,
     )

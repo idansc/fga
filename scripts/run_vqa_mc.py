@@ -27,6 +27,7 @@ from typing import Optional
 
 import numpy as np
 import torch
+from torch.utils.data import ConcatDataset
 from transformers import HfArgumentParser, Trainer, TrainingArguments, set_seed
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
@@ -45,11 +46,19 @@ class Arguments:
     pooling_dim: int = field(default=16000)
     use_ternary: bool = field(default=True)
     mask_padding: bool = field(default=True, metadata={"help": "Keep attention off padded words and slots."})
+    loss_type: str = field(default="ce", metadata={"help": "ce (the paper's) | soft_ce | bce"})
     dropout: float = field(default=0.5, metadata={"help": "Encoder dropout."})
     classifier_dropout: float = field(default=0.3, metadata={"help": "Dropout before the answer classifier."})
     features_in_memory: bool = field(default=True, metadata={"help": "~18 GB as float16."})
     normalize_features: bool = field(default=True, metadata={"help": "L2-normalize each region."})
     max_eval_questions: Optional[int] = field(default=None)
+    train_on_val: bool = field(
+        default=False,
+        metadata={
+            "help": "Train on train2014 + val2014, the protocol behind the published test-dev numbers. "
+            "There is then no local scoring set: test-dev answers are not public."
+        },
+    )
 
 
 def main():
@@ -69,6 +78,7 @@ def main():
             features_h5_path=os.path.join(args.vqa_dir, "features.h5"),
             split=split,
             in_memory=args.features_in_memory and split == "train",
+            num_answers=(len(vocab["answers"]) + 1) if args.loss_type != "ce" else None,
             normalize_features=args.normalize_features,
         )
 
@@ -80,6 +90,12 @@ def main():
         eval_dataset.labels = eval_dataset.labels[: args.max_eval_questions]
         eval_dataset.feature_rows = eval_dataset.feature_rows[: args.max_eval_questions]
         eval_dataset.question_ids = eval_dataset.question_ids[: args.max_eval_questions]
+
+    # train2014 + val2014 is the protocol the published test-dev numbers use.
+    # Nothing is held back: scoring happens on test-dev, whose answers are not
+    # public, so a run with this flag produces predictions rather than a number.
+    if args.train_on_val:
+        logger.info("training on train2014 + val2014; there is no local scoring set")
 
     sample = eval_dataset[0]
     num_regions, feature_dim = sample["image_features"].shape
@@ -100,6 +116,7 @@ def main():
                 pooling_dim=args.pooling_dim,
                 use_ternary=args.use_ternary,
                 mask_padding=args.mask_padding,
+                loss_type=args.loss_type,
                 dropout=args.dropout,
                 classifier_dropout=args.classifier_dropout,
             )
@@ -134,6 +151,12 @@ def main():
             for p, qid in zip(picked.tolist(), question_ids[: logits.size(0)].tolist())
         ]
         return {"mc_accuracy": mc_accuracy, "vqa_accuracy": float(np.mean(official))}
+
+    # answer_scores must survive the collator; the model also raises without it.
+    training_args.remove_unused_columns = False
+
+    if args.train_on_val and train_dataset is not None:
+        train_dataset = ConcatDataset([train_dataset, eval_dataset])
 
     trainer = Trainer(
         model=model,

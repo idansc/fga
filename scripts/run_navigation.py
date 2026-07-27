@@ -10,7 +10,11 @@ ends. That is the usual A2C arrangement, and it is required rather than merely
 faster here: the attention batch-normalizes its interaction grid, which is
 undefined on a batch of one.
 
-Reports the two standard measures on held-out scenes:
+Reports the two standard measures. Pass `--test_episodes` to score the published
+fixed set of 3,914 episodes -- which pins the scene, the target instance and the
+start pose -- rather than episodes sampled from the held-out scenes. Only the
+fixed set is comparable to published numbers; sampling gives an easier task, since
+any instance of the target class counts and the start poses differ.
 
     success    fraction of episodes that end with `Done` while the target is visible
     SPL        success weighted by how close the route was to the shortest one,
@@ -43,6 +47,7 @@ from fga.tasks.navigation.environment import (  # noqa: E402
     GloveTargets,
     NavigationEpisode,
     load_scenes,
+    load_test_episodes,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,8 +61,11 @@ def stack_targets(episodes, targets, device):
     return torch.from_numpy(np.stack([targets[e.target] for e in episodes])).to(device).unsqueeze(1)
 
 
-def evaluate(policy, scenes, targets, device, episodes, max_steps, seed=0, batch=32):
-    """Success and SPL over fresh episodes, acting greedily.
+def evaluate(policy, scenes, targets, device, episodes, max_steps, seed=0, batch=32, fixed=None):
+    """Success and SPL, acting greedily.
+
+    With `fixed`, runs exactly those episodes -- the published set. Otherwise
+    samples `episodes` fresh ones from `scenes`.
 
     Batched only for speed -- the attention uses its running batch-norm
     statistics in eval mode, so the result does not depend on the batch.
@@ -65,10 +73,18 @@ def evaluate(policy, scenes, targets, device, episodes, max_steps, seed=0, batch
     rng = random.Random(seed)
     policy.eval()
     successes, spl = [], []
+    pending = list(fixed) if fixed is not None else None
     with torch.no_grad():
-        remaining = episodes
+        remaining = len(pending) if pending is not None else episodes
         while remaining > 0:
-            group = [NavigationEpisode.sample(scenes, rng, max_steps) for _ in range(min(batch, remaining))]
+            if pending is not None:
+                group = pending[:batch]
+                pending = pending[batch:]
+                for episode in group:  # a fixed episode may be scored twice
+                    episode.steps, episode.done, episode.success = 0, False, False
+                    episode.state = episode.start_state
+            else:
+                group = [NavigationEpisode.sample(scenes, rng, max_steps) for _ in range(min(batch, remaining))]
             remaining -= len(group)
             optimal = [e.optimal_steps() for e in group]
             live = list(range(len(group)))
@@ -111,10 +127,16 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=7e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--entropy_weight", type=float, default=0.01)
+    parser.add_argument("--dropout", type=float, default=0.0, help="On the fused state, against scene overfitting.")
     parser.add_argument("--value_weight", type=float, default=0.5)
     parser.add_argument("--grad_clip", type=float, default=50.0)
     parser.add_argument("--eval_every", type=int, default=5000)
     parser.add_argument("--eval_episodes", type=int, default=200)
+    parser.add_argument(
+        "--test_episodes",
+        default=None,
+        help="JSON from scripts/convert_nav_test_split.py. The only setting comparable to published numbers.",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
@@ -130,6 +152,12 @@ def main():
     test_scenes = load_scenes(offline, split="test")
     logger.info(f"{len(train_scenes)} train scenes, {len(test_scenes)} test scenes, glove dim {targets.dim}")
 
+    fixed_episodes = None
+    if args.test_episodes:
+        by_name = {scene.name: scene for scene in test_scenes}
+        fixed_episodes = load_test_episodes(args.test_episodes, by_name, args.max_steps)
+        logger.info(f"scoring the published set: {len(fixed_episodes)} fixed episodes")
+
     sample = train_scenes[0].feature(next(iter(train_scenes[0].states)))
     policy = NavigationPolicy(
         NavigationConfig(
@@ -137,6 +165,7 @@ def main():
             observation_dim=sample.shape[1],
             grid_size=sample.shape[0],
             action_space=len(ACTIONS),
+            dropout=args.dropout,
         )
     ).to(args.device)
     logger.info(f"params: {sum(p.numel() for p in policy.parameters()) / 1e6:.1f}M")
@@ -221,7 +250,8 @@ def main():
         if episodes_done >= next_eval:
             next_eval += args.eval_every
             success, spl = evaluate(
-                policy, test_scenes, targets, args.device, args.eval_episodes, args.max_steps
+                policy, test_scenes, targets, args.device, args.eval_episodes, args.max_steps,
+                fixed=fixed_episodes,
             )
             logger.info(
                 f"{episodes_done} episodes: train success {np.mean(recent) if recent else 0:.3f}  "
@@ -232,8 +262,11 @@ def main():
                 policy.save_pretrained(args.output_dir)
                 logger.info(f"  saved to {args.output_dir}")
 
-    success, spl = evaluate(policy, test_scenes, targets, args.device, 1000, args.max_steps)
-    logger.info(f"final held-out over 1000 episodes: success {success:.3f}  SPL {spl:.3f}")
+    success, spl = evaluate(
+        policy, test_scenes, targets, args.device, 1000, args.max_steps, fixed=fixed_episodes
+    )
+    kind = f"the published {len(fixed_episodes)} episodes" if fixed_episodes else "1000 sampled episodes"
+    logger.info(f"final, over {kind}: success {success:.3f}  SPL {spl:.3f}")
 
 
 if __name__ == "__main__":
