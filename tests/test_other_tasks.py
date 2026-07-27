@@ -5,6 +5,9 @@ a contrastive score, and a policy — so together they check that the layer is n
 quietly specialized to answer ranking.
 """
 
+import json
+
+import numpy as np
 import pytest
 import torch
 
@@ -266,3 +269,97 @@ def test_navigation_distinguishes_where_the_target_sits():
         a = policy(target_embeds=target, observation=left).action_logits
         b = policy(target_embeds=target, observation=right).action_logits
     assert not torch.allclose(a, b, atol=1e-4)
+
+
+# --- the offline navigation environment ---
+
+
+def _toy_scene(tmp_path):
+    """A 3x1 corridor of poses, all facing one way, with a target at the end."""
+    import h5py
+
+    directory = tmp_path / "FloorPlan1_physics"
+    directory.mkdir()
+    poses = ["0.00|0.00|0|0", "0.00|0.25|0|0", "0.00|0.50|0|0"]
+    with open(directory / "graph.json", "w") as handle:
+        json.dump(
+            {
+                "nodes": [{"id": p} for p in poses],
+                "links": [
+                    {"source": poses[0], "target": poses[1]},
+                    {"source": poses[1], "target": poses[2]},
+                ],
+            },
+            handle,
+        )
+    with open(directory / "visible_object_map.json", "w") as handle:
+        json.dump({"Toaster|+00.1|+00.2|+00.3": [poses[2]]}, handle)
+    with h5py.File(directory / "resnet18_featuremap.hdf5", "w") as handle:
+        for i, p in enumerate(poses):
+            handle.create_dataset(p, data=np.full((1, 4, 2, 2), float(i), dtype=np.float32))
+    return directory, poses
+
+
+def test_offline_scene_reads_poses_visibility_and_features(tmp_path):
+    from fga.tasks.navigation import OfflineScene
+
+    directory, poses = _toy_scene(tmp_path)
+    scene = OfflineScene(str(directory))
+
+    assert len(scene) == 3
+    assert scene.targets == ["Toaster"]          # only classes the scene contains
+    assert scene.sees(poses[2], "Toaster") and not scene.sees(poses[0], "Toaster")
+    # (1, C, H, W) becomes (cells, channels), which is what the policy consumes.
+    assert scene.feature(poses[1]).shape == (4, 4)
+
+
+def test_offline_scene_actions_respect_the_graph(tmp_path):
+    """MoveAhead only follows an edge; walls are missing edges, not geometry."""
+    from fga.tasks.navigation import OfflineScene
+
+    directory, poses = _toy_scene(tmp_path)
+    scene = OfflineScene(str(directory))
+
+    assert scene.next_state(poses[0], "MoveAhead") == poses[1]
+    assert scene.next_state(poses[2], "MoveAhead") is None      # end of the corridor
+    assert scene.next_state(poses[0], "RotateLeft") is None     # that pose is not cached
+    assert scene.next_state(poses[0], "LookUp") is None         # already at horizon 0
+
+
+def test_episode_rewards_only_a_correct_done(tmp_path):
+    from fga.tasks.navigation import NavigationEpisode, OfflineScene
+    from fga.tasks.navigation.environment import ACTIONS
+
+    directory, poses = _toy_scene(tmp_path)
+    scene = OfflineScene(str(directory))
+    done = ACTIONS.index("Done")
+
+    early = NavigationEpisode(scene, "Toaster", poses[0])
+    reward, finished, _ = early.step(done)
+    assert finished and not early.success and reward < 0
+
+    arrived = NavigationEpisode(scene, "Toaster", poses[2])
+    reward, finished, _ = arrived.step(done)
+    assert finished and arrived.success and reward == 5.0
+
+
+def test_episode_shortest_route_counts_the_done_action(tmp_path):
+    from fga.tasks.navigation import NavigationEpisode, OfflineScene
+
+    directory, poses = _toy_scene(tmp_path)
+    scene = OfflineScene(str(directory))
+    # Two moves to reach the visible pose, plus the Done that claims it.
+    assert NavigationEpisode(scene, "Toaster", poses[0]).optimal_steps() == 3
+    assert NavigationEpisode(scene, "Toaster", poses[2]).optimal_steps() == 1
+
+
+def test_episode_stops_at_max_steps(tmp_path):
+    from fga.tasks.navigation import NavigationEpisode, OfflineScene
+    from fga.tasks.navigation.environment import ACTIONS
+
+    directory, poses = _toy_scene(tmp_path)
+    episode = NavigationEpisode(OfflineScene(str(directory)), "Toaster", poses[0], max_steps=2)
+    forward = ACTIONS.index("MoveAhead")
+    episode.step(forward)
+    _, finished, _ = episode.step(forward)
+    assert finished and not episode.success
