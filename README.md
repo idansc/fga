@@ -240,7 +240,7 @@ python scripts/run_visual_dialog.py \
 | [Idan/fga](https://huggingface.co/Idan/fga) | The epoch-5 checkpoint below — MRR 66.01 |
 | [Idan/fga-ndcg](https://huggingface.co/Idan/fga-ndcg) | Dense-finetuned — NDCG 69.07 |
 | [Idan/fga-ensemble](https://huggingface.co/Idan/fga-ensemble) | The five members of 5×FGA — MRR 68.43 together |
-| [Idan/fga-vqa](https://huggingface.co/Idan/fga-vqa) | Open-ended VQA v1 — 62.07 on val2014 |
+| [Idan/fga-vqa](https://huggingface.co/Idan/fga-vqa) | Open-ended VQA v1 — 61.97 on val2014 |
 
 The ensemble members are subfolders, so the reported 5×FGA number can be
 reproduced rather than taken on trust:
@@ -430,7 +430,7 @@ leave-one-annotator-out subsets.
 
 | objective | 20 epochs | 40 epochs |
 | --- | --- | --- |
-| **`soft_ce`** — softmax against the graded scores | 61.55 | **62.07** |
+| **`soft_ce`** — softmax against the graded scores | 61.55 | **61.97** |
 | `bce` — sigmoid against the same scores | 60.71 | |
 | `ce` — one label | 60.47 | |
 
@@ -446,8 +446,10 @@ an answer earns `min(matches/3, 1)`. Supervising those scores instead of one
 "correct" id is worth about a point, and `soft_ce` is the default for that reason.
 The sigmoid form is what the [2017 challenge writeup](https://arxiv.org/abs/1708.02711)
 recommends; here the softmax form is 0.8 better, which is worth knowing before
-copying the recipe. Accuracy is flat over the last ten epochs, so 62.07 is
-converged rather than a stopping point.
+copying the recipe. Accuracy is flat over the last ten epochs — it moves between
+61.97 and 62.07 with no trend — so this is converged rather than a stopping point.
+The figure quoted is the final epoch, which is the checkpoint that ships; the
+62.07 seen mid-run was not saved.
 
 By answer type: yes/no 78.6, number 37.4, other 54.6.
 
