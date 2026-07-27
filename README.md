@@ -342,8 +342,43 @@ Five models trained from different seeds, evaluated on VisDial v1.0 val:
 against the published 5×FGA at MRR 69 and R@1 56%. Averaging scores beats averaging
 ranks here, which is what you would expect from five members of one architecture: their
 scores are already on a comparable scale, so the rank transform only discards magnitude.
-Ranks earn their place when the members disagree in confidence — mixing an MRR model
-with a dense-finetuned one, whose distributions differ sharply.
+
+Two things that did **not** work are worth recording, because both are the obvious
+thing to try:
+
+* **Picking each seed's best checkpoint made the ensemble slightly worse** — 68.27
+  MRR against 68.43 for the last checkpoints, even though the swap brings in the
+  66.01 model in place of a 64.68 one. Ensembles are made by disagreement, not by
+  member strength, and checkpoints selected on the same metric agree more.
+* **Stacking all 26 checkpoints** of the five runs gave 68.40 / 60.33 — no better
+  than five. Extra checkpoints of a run you already have add nothing; the diversity
+  has to come from the seeds.
+
+### Ensembling for NDCG
+
+The dense-finetuned models can be combined the same way, and here the answer is
+different again:
+
+| Ensemble | NDCG | MRR | R@1 | R@5 | R@10 | Mean rank |
+| --- | --- | --- | --- | --- | --- | --- |
+| best single dense model | **69.07** | 49.03 | 34.27 | 66.15 | 80.13 | 6.68 |
+| 4 dense models, score-averaged | 67.68 | 60.45 | 47.69 | 75.89 | 86.15 | 5.13 |
+| 4 dense models, rank-averaged | 67.87 | 59.87 | 47.08 | 75.11 | 85.88 | 5.21 |
+| 5 sparse + 4 dense, score-averaged | 64.96 | **66.79** | 53.60 | 83.45 | 91.46 | 3.73 |
+| 5 sparse + 4 dense, rank-averaged | 65.63 | 65.15 | 51.79 | 81.83 | 90.44 | 3.96 |
+
+Ensembling the dense models *loses* 1.4 NDCG against the best one alone, because the
+four are not equally good — 69.07, 68.00, 66.61 and 62.43 — and averaging drags the
+best toward the rest. An ensemble helps when members disagree about which candidate
+is best, not when they disagree about how good they are.
+
+Mixing the two families is the useful case. At 64.96 NDCG and 66.79 MRR it beats
+every dense model on MRR by 5 points and every sparse model on NDCG by 6, which no
+single checkpoint on the trade-off curve manages. And this is the one place rank
+averaging earns its keep: it gains 0.7 NDCG over score averaging, because a
+soft-label-finetuned model's scores are on a visibly different scale and the rank
+transform is what makes the two comparable. It costs MRR to buy that, so which rule
+to use follows from which metric is being submitted.
 
 The two metrics disagreeing is the subject of the
 [2020 challenge submission](https://github.com/idansc/mrr-ndcg).
