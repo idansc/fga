@@ -19,11 +19,10 @@ run without submitting to the evaluation server -- so the numbers are not direct
 comparable, and the difference is not only the evaluation set but about 50% more
 training data.
 
-`--val_holdout` reserves that fraction of the val *images* for scoring, and
-`--train_on_val` adds the rest to training. Running the pair measures how much of
-the difference is the data: both score exactly the same held-out questions, and
-only one has seen the other 80% of val. Splitting by image, not by question, keeps
-every question about a given picture on one side.
+`--train_on_val` trains on train2014 + val2014, which is the protocol behind the
+published numbers. It leaves nothing to score locally: test-dev answers are not
+public, so such a run writes predictions for the evaluation server rather than an
+accuracy.
 """
 
 import json
@@ -35,7 +34,7 @@ from typing import Optional
 
 import numpy as np
 import torch
-from torch.utils.data import ConcatDataset, Dataset, Subset
+from torch.utils.data import ConcatDataset, Dataset
 from transformers import HfArgumentParser, Trainer, TrainingArguments, set_seed
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
@@ -74,13 +73,12 @@ class Arguments:
     features_in_memory: bool = field(default=True)
     normalize_features: bool = field(default=True)
     max_eval_questions: Optional[int] = field(default=None)
-    val_holdout: float = field(
-        default=0.0,
-        metadata={"help": "Fraction of val *images* to reserve for scoring. 0 scores all of val."},
-    )
     train_on_val: bool = field(
         default=False,
-        metadata={"help": "Add the val images not held out to training, the paper's train+val protocol."},
+        metadata={
+            "help": "Train on train2014 + val2014, the protocol behind the published test-dev numbers. "
+            "There is then no local scoring set: test-dev answers are not public."
+        },
     )
 
 
@@ -113,23 +111,11 @@ def main():
         for attr in ("questions", "choices", "labels", "feature_rows", "question_ids"):
             setattr(eval_base, attr, getattr(eval_base, attr)[: args.max_eval_questions])
 
-    # Split val by image so that the same held-out questions can be scored by a
-    # model trained with the rest of val and by one trained without it.
-    val_train_indices, val_eval_indices = None, None
-    if args.val_holdout > 0:
-        # The split depends only on the seed, so a run with train_on_val and one
-        # without score exactly the same questions.
-        images = np.unique(eval_base.question_ids // 10)
-        rng = np.random.default_rng(training_args.seed)
-        rng.shuffle(images)
-        held_out = set(images[: int(len(images) * args.val_holdout)].tolist())
-        is_held = np.fromiter(((q // 10) in held_out for q in eval_base.question_ids), bool, len(eval_base))
-        val_eval_indices = np.flatnonzero(is_held)
-        val_train_indices = np.flatnonzero(~is_held) if args.train_on_val else None
-        logger.info(
-            f"val split by image: {len(val_eval_indices)} questions held out over {len(held_out)} images"
-            + (f"; {len(val_train_indices)} join training" if val_train_indices is not None else "")
-        )
+    # train2014 + val2014 is the protocol the published test-dev numbers use.
+    # Nothing is held back: scoring happens on test-dev, whose answers are not
+    # public, so a run with this flag produces predictions rather than a number.
+    if args.train_on_val:
+        logger.info("training on train2014 + val2014; there is no local scoring set")
 
     sample = eval_base[0]
     num_regions, feature_dim = sample["image_features"].shape
@@ -154,7 +140,7 @@ def main():
     logger.info(f"params: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
     answers = vocab["answers"]
-    question_ids = eval_base.question_ids if val_eval_indices is None else eval_base.question_ids[val_eval_indices]
+    question_ids = eval_base.question_ids
 
     def compute_metrics(eval_prediction):
         logits = eval_prediction.predictions
@@ -184,12 +170,8 @@ def main():
 
     train_dataset = OpenEndedView(train_base) if train_base else None
     eval_dataset = OpenEndedView(eval_base)
-    if val_eval_indices is not None:
-        if train_dataset is not None and val_train_indices is not None:
-            train_dataset = ConcatDataset(
-                [train_dataset, Subset(OpenEndedView(eval_base), val_train_indices.tolist())]
-            )
-        eval_dataset = Subset(eval_dataset, val_eval_indices.tolist())
+    if args.train_on_val and train_dataset is not None:
+        train_dataset = ConcatDataset([train_dataset, OpenEndedView(eval_base)])
 
     trainer = Trainer(
         model=model,
