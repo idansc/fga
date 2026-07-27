@@ -91,6 +91,11 @@ class VQAMultipleChoiceDataset(Dataset):
         features_h5_path: id-indexed image features.
         split: `"train"` or `"val"`.
         in_memory: hold the feature table in RAM (~18 GB as float16).
+        num_answers: size of the answer vocabulary including the padding id. When
+            given, each example also carries `answer_scores`, a dense vector of
+            the VQA score every answer would earn from this question's ten
+            annotators. That is the target a graded, multi-label objective needs;
+            the single `labels` id throws the grading away.
         normalize_features: L2-normalize each region vector. Bottom-up features
             arrive with an L2 norm around 88 per box; feeding those through the
             encoder's `Linear -> Tanh` drives 98% of the activations past |0.99|,
@@ -105,9 +110,11 @@ class VQAMultipleChoiceDataset(Dataset):
         features_h5_path: str,
         split: str,
         in_memory: bool = False,
+        num_answers: Optional[int] = None,
         normalize_features: bool = True,
     ):
         self.normalize_features = normalize_features
+        self.num_answers = num_answers
         self.split = split
         self.features_h5_path = features_h5_path
         self._features: Optional[h5py.File] = None
@@ -118,6 +125,15 @@ class VQAMultipleChoiceDataset(Dataset):
             self.labels = h5[f"{split}_labels"][:]
             self.feature_rows = h5[f"{split}_feature_rows"][:]
             self.question_ids = h5[f"{split}_question_ids"][:]
+            # Written by a later version of scripts/prepare_vqa.py; a file
+            # without them still trains the single-label objective.
+            self.target_ids = h5[f"{split}_target_ids"][:] if f"{split}_target_ids" in h5 else None
+            self.target_scores = h5[f"{split}_target_scores"][:] if f"{split}_target_scores" in h5 else None
+        if self.num_answers is not None and self.target_ids is None:
+            raise ValueError(
+                f"{vqa_h5_path} has no {split}_target_ids; rebuild it with scripts/prepare_vqa.py "
+                "to train against soft scores."
+            )
 
         self.features_in_memory = None
         if in_memory:
@@ -143,12 +159,21 @@ class VQAMultipleChoiceDataset(Dataset):
         image = np.asarray(self._feature(self.feature_rows[index]), dtype=np.float32)
         if self.normalize_features:
             image = self._l2_normalize(image)
-        return {
+        example = {
             "question_input_ids": self.questions[index].astype(np.int64),
             "choice_input_ids": self.choices[index].astype(np.int64),
             "image_features": image,
             "labels": np.int64(self.labels[index]),
         }
+        if self.num_answers is not None:
+            scores = np.zeros(self.num_answers, dtype=np.float32)
+            ids = self.target_ids[index]
+            # Slot 0 is padding, so a target id of 0 means "no answer here"; the
+            # unconditional scatter would otherwise pile every pad onto answer 0.
+            real = ids > 0
+            scores[ids[real]] = self.target_scores[index][real]
+            example["answer_scores"] = scores
+        return example
 
 
 class VQACollator:

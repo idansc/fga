@@ -34,6 +34,7 @@ from transformers import PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import ModelOutput
 
 from ...attention import FactorGraphAttention
+from .layers import GatedTanh
 from .modeling_hoa import QuestionEncoder
 from .pooling import CompactBilinearPooling, signed_sqrt
 
@@ -57,11 +58,24 @@ class OpenEndedVQAConfig(PretrainedConfig):
         num_regions (`int`, *optional*, defaults to 196): image regions, 14x14.
         max_question_length (`int`, *optional*, defaults to 15): question words.
         pooling_dim (`int`, *optional*, defaults to 16000): CBP sketch size.
-        soft_targets (`bool`, *optional*, defaults to `False`):
-            Train against the distribution over the ten human answers rather than
-            a single label. VQA accuracy credits an answer given by at least
-            three of ten annotators, so the label is genuinely a distribution and
-            a one-hot target throws that away.
+        loss_type (`str`, *optional*, defaults to `"bce"`):
+            How the answer is supervised.
+
+            - `"bce"` — sigmoid outputs and binary cross entropy against the VQA
+              score every answer earns. VQA is graded and often has several
+              acceptable answers, so it is a multi-label regression, not a
+              single-label classification. This is what the 2017 challenge
+              winners identified as the single most useful change.
+            - `"soft_ce"` — softmax cross entropy against the same scores
+              renormalized to a distribution. Keeps the answers competing.
+            - `"ce"` — cross entropy against one label, the original's objective.
+
+            `"bce"` and `"soft_ce"` need `answer_scores`, which the dataset
+            supplies when given `num_answers`.
+        gated_tanh (`bool`, *optional*, defaults to `True`):
+            Use [`GatedTanh`] in the image encoder instead of a plain `tanh`.
+        soft_targets (`bool`, *optional*, defaults to `None`):
+            Deprecated. `True` means `loss_type="soft_ce"`.
         dropout (`float`, *optional*, defaults to 0.5): encoder dropout.
         classifier_dropout (`float`, *optional*, defaults to 0.3): head dropout.
         mask_padding (`bool`, *optional*, defaults to `True`):
@@ -81,7 +95,9 @@ class OpenEndedVQAConfig(PretrainedConfig):
         num_regions: int = 196,
         max_question_length: int = 15,
         pooling_dim: int = 16000,
-        soft_targets: bool = False,
+        loss_type: str = "bce",
+        gated_tanh: bool = True,
+        soft_targets: Optional[bool] = None,
         dropout: float = 0.5,
         classifier_dropout: float = 0.3,
         mask_padding: bool = True,
@@ -95,7 +111,12 @@ class OpenEndedVQAConfig(PretrainedConfig):
         self.num_regions = num_regions
         self.max_question_length = max_question_length
         self.pooling_dim = pooling_dim
-        self.soft_targets = soft_targets
+        if soft_targets is not None:
+            loss_type = "soft_ce" if soft_targets else "ce"
+        if loss_type not in ("bce", "soft_ce", "ce"):
+            raise ValueError(f"loss_type must be one of bce, soft_ce, ce; got {loss_type!r}.")
+        self.loss_type = loss_type
+        self.gated_tanh = gated_tanh
         self.dropout = dropout
         self.classifier_dropout = classifier_dropout
         self.mask_padding = mask_padding
@@ -144,8 +165,9 @@ class OpenEndedVQAModel(PreTrainedModel):
 
         self.question_encoder = QuestionEncoder(config)
         self.image_encoder = nn.Sequential(
-            nn.Linear(config.image_feature_dim, hidden),
-            nn.Tanh(),
+            GatedTanh(config.image_feature_dim, hidden)
+            if config.gated_tanh
+            else nn.Sequential(nn.Linear(config.image_feature_dim, hidden), nn.Tanh()),
             nn.Dropout(config.dropout),
         )
 
@@ -217,13 +239,28 @@ class OpenEndedVQAModel(PreTrainedModel):
         logits = self.classifier(fused)
 
         loss = None
-        if self.config.soft_targets and answer_scores is not None:
-            # Cross entropy against the graded targets, as with dense relevance in
-            # Visual Dialog: a question with several acceptable answers should not
-            # be told that exactly one is right.
-            mass = answer_scores.sum(dim=-1, keepdim=True).clamp(min=1e-12)
-            loss = -((answer_scores / mass) * F.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
+        if self.config.loss_type == "ce":
+            if labels is not None:
+                loss = F.cross_entropy(logits, labels)
+        elif answer_scores is not None:
+            if self.config.loss_type == "bce":
+                # Multi-label regression: each answer is scored on its own, so
+                # several can be right at once and a near-miss keeps partial
+                # credit. Scaled back up by the vocabulary size that
+                # `binary_cross_entropy_with_logits` averaged over, so the signal
+                # does not shrink as the vocabulary grows.
+                loss = F.binary_cross_entropy_with_logits(logits, answer_scores) * logits.size(-1)
+            else:
+                # The same targets renormalized to a distribution, so answers compete.
+                mass = answer_scores.sum(dim=-1, keepdim=True).clamp(min=1e-12)
+                loss = -((answer_scores / mass) * F.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
+        elif self.training:
+            raise ValueError(
+                f"loss_type={self.config.loss_type!r} needs answer_scores, and none were given. Build the "
+                "dataset with num_answers set so it supplies them."
+            )
         elif labels is not None:
+            # Evaluating a graded model on data that carries only a hard label.
             loss = F.cross_entropy(logits, labels)
 
         pooled = dict(zip(OPEN_ENDED_MODALITIES, attended))
