@@ -46,7 +46,11 @@ def main():
     sys.path.insert(0, os.path.dirname(os.path.abspath(args.split_dir.rstrip("/"))))
 
     episodes = []
-    for path in sorted(glob.glob(os.path.join(args.split_dir, f"*_{args.split}.pkl"))):
+    paths = sorted(glob.glob(os.path.join(args.split_dir, f"*_{args.split}.pkl")))
+    # `*_test_val.pkl` is a combined file and matches the val glob; the splits are
+    # the four per-room files, and mixing the combined one in double-counts.
+    paths = [p for p in paths if not os.path.basename(p).endswith("_test_val.pkl")]
+    for path in paths:
         with open(path, "rb") as handle:
             loaded = pickle.load(handle)
         for item in loaded:
