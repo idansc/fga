@@ -239,6 +239,16 @@ python scripts/run_visual_dialog.py \
 | --- | --- |
 | [Idan/fga](https://huggingface.co/Idan/fga) | The epoch-5 checkpoint below — MRR 66.01 |
 | [Idan/fga-ndcg](https://huggingface.co/Idan/fga-ndcg) | Dense-finetuned — NDCG 69.07 |
+| [Idan/fga-ensemble](https://huggingface.co/Idan/fga-ensemble) | The five members of 5×FGA — MRR 68.43 together |
+| [Idan/fga-vqa](https://huggingface.co/Idan/fga-vqa) | Multiple-choice VQA v1 — 61.40 |
+
+The ensemble members are subfolders, so the reported 5×FGA number can be
+reproduced rather than taken on trust:
+
+```python
+members = [FGAForVisualDialog.from_pretrained("Idan/fga-ensemble", subfolder=name)
+           for name in ["frcnn", "seed1", "seed2", "seed3", "seed4"]]
+```
 
 Original `.pth.tar` checkpoints convert to the HuggingFace format with:
 
