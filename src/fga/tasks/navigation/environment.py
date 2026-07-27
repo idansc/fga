@@ -46,6 +46,8 @@ __all__ = [
     "OfflineScene",
     "GloveTargets",
     "NavigationEpisode",
+    "load_scenes",
+    "load_test_episodes",
     "scene_names",
     "ROOM_OBJECTS",
 ]
@@ -73,9 +75,24 @@ _ROOM_OFFSETS = {"kitchen": 0, "living_room": 200, "bedroom": 300, "bathroom": 4
 
 
 def scene_names(rooms: Sequence[str] = tuple(ROOM_OBJECTS), split: str = "train") -> List[str]:
-    """Scene folder names for a split: 1-20 of each room type train, 21-30 test."""
+    """Scene names for a split: 1-20 of each room type train, 21-30 test."""
     numbers = range(1, 21) if split == "train" else range(21, 31)
-    return [f"FloorPlan{_ROOM_OFFSETS[room] + n}_physics" for room in rooms for n in numbers]
+    return [f"FloorPlan{_ROOM_OFFSETS[room] + n}" for room in rooms for n in numbers]
+
+
+def resolve_scene_dir(root: str, name: str) -> Optional[str]:
+    """Find a scene's folder, whichever way the dump spelled it.
+
+    The SAVN dump is not consistent: kitchens and living rooms carry a `_physics`
+    suffix, bedrooms and bathrooms do not. Assuming one spelling silently loses
+    half the scenes, since a missing folder is indistinguishable from a scene that
+    was never requested.
+    """
+    for candidate in (name, f"{name}_physics", name.replace("_physics", "")):
+        directory = os.path.join(root, candidate)
+        if os.path.isdir(directory):
+            return directory
+    return None
 
 
 def room_of(scene: str) -> str:
@@ -136,8 +153,10 @@ class OfflineScene:
 
         with open(os.path.join(directory, "visible_object_map.json")) as handle:
             visible = json.load(handle)
-        # Keys are instances ("Fridge|-01.5|+00.9|+02.3"); the agent is asked for
-        # a class, and any instance of it will do.
+        # Keys are instances ("Fridge|-01.5|+00.9|+02.3"). Both views are kept:
+        # a sampled episode asks for a class and any instance will do, while the
+        # published test episodes name the instances that count.
+        self.instances: Dict[str, set] = {k: set(v) for k, v in visible.items()}
         self.goals: Dict[str, set] = {}
         for instance, poses in visible.items():
             self.goals.setdefault(instance.split("|")[0], set()).update(poses)
@@ -198,12 +217,23 @@ class NavigationEpisode:
     with no reward, so the agent has to commit rather than stall.
     """
 
-    def __init__(self, scene: OfflineScene, target: str, state: str, max_steps: int = 30):
+    def __init__(
+        self,
+        scene: OfflineScene,
+        target: str,
+        state: str,
+        max_steps: int = 30,
+        task_data: Optional[Sequence[str]] = None,
+    ):
         self.scene = scene
         self.target = target
         self.state = state
         self.start_state = state
         self.max_steps = max_steps
+        # When the episode names specific instances -- as the published test set
+        # does -- only those count. Accepting any instance of the class would be
+        # an easier task than the one the published numbers were measured on.
+        self.task_data = list(task_data) if task_data else None
         self.steps = 0
         self.done = False
         self.success = False
@@ -221,6 +251,16 @@ class NavigationEpisode:
         states = [s for s in scene.states if not scene.sees(s, target)]
         return cls(scene, target, rng.choice(states or sorted(scene.states)), max_steps)
 
+    @property
+    def goal_states(self) -> set:
+        """The poses that count as having found the target."""
+        if self.task_data is None:
+            return self.scene.goals.get(self.target, set())
+        found = set()
+        for instance in self.task_data:
+            found |= self.scene.instances.get(instance, set())
+        return found
+
     def observation(self) -> np.ndarray:
         return self.scene.feature(self.state)
 
@@ -234,7 +274,7 @@ class NavigationEpisode:
 
         if action == DONE:
             self.done = True
-            self.success = self.scene.sees(self.state, self.target)
+            self.success = self.state in self.goal_states
             if self.success:
                 reward = GOAL_SUCCESS_REWARD
         else:
@@ -256,7 +296,7 @@ class NavigationEpisode:
         """
         from collections import deque
 
-        goals = self.scene.goals.get(self.target)
+        goals = self.goal_states
         if not goals:
             return None
         seen = {self.start_state}
@@ -278,13 +318,59 @@ def load_scenes(
     rooms: Sequence[str] = tuple(ROOM_OBJECTS),
     split: str = "train",
     features_file: str = "resnet18_featuremap.hdf5",
+    allow_missing: bool = False,
 ) -> List[OfflineScene]:
-    """Every scene of the given room types that is present under `root`."""
-    scenes = []
+    """Every scene of the given room types, for one split.
+
+    Raises if any is absent rather than quietly training on what happens to be
+    there: a silently halved scene list still trains, still improves, and still
+    reports a held-out number, so nothing downstream would reveal it.
+    """
+    scenes, missing = [], []
     for name in scene_names(rooms, split):
-        directory = os.path.join(root, name)
-        if os.path.isdir(directory):
+        directory = resolve_scene_dir(root, name)
+        if directory is None:
+            missing.append(name)
+        else:
             scenes.append(OfflineScene(directory, features_file))
+    if missing and not allow_missing:
+        raise FileNotFoundError(
+            f"{len(missing)} of {len(missing) + len(scenes)} {split} scenes are absent from {root}, "
+            f"e.g. {missing[:3]}. Pass allow_missing=True to train on the rest deliberately."
+        )
     if not scenes:
         raise FileNotFoundError(f"No scene folders found under {root}.")
     return scenes
+
+
+def load_test_episodes(
+    path: str,
+    scenes: Dict[str, OfflineScene],
+    max_steps: int = 30,
+) -> List[NavigationEpisode]:
+    """The published fixed test episodes, from `scripts/convert_nav_test_split.py`.
+
+    Navigation is scored on a fixed set of episodes rather than on random ones, so
+    a number measured on sampled episodes is not comparable to a published one.
+    Each entry pins the scene, the target instances and the start pose.
+
+    Scene names in the split omit the `_physics` suffix the feature folders carry.
+    """
+    with open(path) as handle:
+        specs = json.load(handle)
+
+    episodes, missing = [], set()
+    for spec in specs:
+        name = spec["scene"]
+        scene = scenes.get(name) or scenes.get(f"{name}_physics") or scenes.get(name.replace("_physics", ""))
+        if scene is None:
+            missing.add(name)
+            continue
+        episodes.append(
+            NavigationEpisode(scene, spec["target"], spec["state"], max_steps, spec.get("task_data"))
+        )
+    if missing:
+        raise FileNotFoundError(
+            f"{len(missing)} scenes named by {path} have no offline data, e.g. {sorted(missing)[:3]}."
+        )
+    return episodes
