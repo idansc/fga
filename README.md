@@ -429,18 +429,24 @@ Trained on **COCO train2014** (230,084 questions), scored on **all of val2014**
 the official metric — the answer normalization, and the average over the ten
 leave-one-annotator-out subsets.
 
-| objective | 20 epochs | 40 epochs |
-| --- | --- | --- |
-| **`soft_ce`** — softmax against the graded scores | 61.55 | **61.97** |
-| `bce` — sigmoid against the same scores | 60.71 | |
-| `ce` — one label | 60.47 | |
+The three objectives, trained identically for 20 epochs:
+
+| objective | VQA accuracy |
+| --- | --- |
+| **`soft_ce`** — softmax against the graded scores | **61.55** |
+| `bce` — sigmoid against the same scores | 60.71 |
+| `ce` — one label | 60.47 |
+
+`soft_ce` trained for 40 epochs reaches **61.97**, and that is the published
+checkpoint. It is flat over the last ten epochs, moving between 61.97 and 62.07
+with no trend; the figure quoted is the final epoch, which is the file that ships.
 
 > The published open-ended number, **66.7**, is measured on **test-dev** after
 > training on train2014 **and** val2014. That is a different protocol on both
 > axes: about 50% more training data, and an evaluation set whose labels are not
 > public — the only way to produce that number is a submission to the evaluation
 > server. Training on train and scoring on val is what can be run locally, and
-> 62.07 is that number, not a failed 66.7.
+> 61.97 is that number, not a failed 66.7.
 
 VQA is graded rather than single-label — ten annotators answer each question, and
 an answer earns `min(matches/3, 1)`. Supervising those scores instead of one
