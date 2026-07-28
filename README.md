@@ -241,6 +241,7 @@ python scripts/run_visual_dialog.py \
 | [Idan/fga-ndcg](https://huggingface.co/Idan/fga-ndcg) | Dense-finetuned — NDCG 69.07 |
 | [Idan/fga-ensemble](https://huggingface.co/Idan/fga-ensemble) | The five members of 5×FGA — MRR 68.43 together |
 | [Idan/fga-vqa](https://huggingface.co/Idan/fga-vqa) | Open-ended VQA v1 — 61.97 on val2014 |
+| [Idan/fga-navigation](https://huggingface.co/Idan/fga-navigation) | Target-driven navigation — 0.421 success, 0.167 SPL |
 
 The ensemble members are subfolders, so the reported 5×FGA number can be
 reproduced rather than taken on trust:
@@ -526,6 +527,41 @@ attention differently —
   does *not* pool: the attention re-weights each grid cell and the whole map is
   flattened into the recurrent state, because the agent must know where the
   target is, not only that it is present.
+
+#### Navigation results
+
+Trained by advantage actor-critic on the SAVN offline dump — every reachable pose
+rendered once and its ResNet18 feature map cached, so no simulator is needed — and
+scored on the published fixed set of 3,914 test episodes, each pinning the scene,
+the target object instance and the start pose. Checkpoints are selected on the
+4,086 val episodes and the winner scored once on test, as `full_eval.py` does.
+
+| | success | SPL |
+| --- | --- | --- |
+| **this port** | **0.421** | **0.167** |
+| released A2C weights, same protocol | 0.405 | 0.167 |
+| released final weights, same protocol | 0.411 | 0.163 |
+| published figure | 0.462 | 0.179 |
+
+The released weights were re-scored here rather than compared against on trust,
+which is what makes the rest of the table readable. Their SPL reproduces to 0.003,
+so the environment is faithful; and the four-point offset to the published 0.462
+applies to their weights as much as to this port, so it sits in the measurement
+rather than in the training.
+
+Two findings worth carrying into any further work. Val and test disagree — the run
+scoring 0.367 on val scored 0.421 on test — so val selection is a weak proxy here
+despite being the published protocol. And the agent overfits to training scenes:
+train success reaches 0.906 against 0.42 held out, and training past roughly one
+million episodes makes that worse, not better.
+
+```bash
+python scripts/convert_nav_test_split.py --split_dir spatial_attention/test_val_split \
+    --split test --output nav/data/test_episodes.json
+python scripts/run_navigation.py --data_root nav/data \
+    --val_episodes nav/data/val_episodes.json \
+    --test_episodes nav/data/test_episodes.json --output_dir models/navigation
+```
 
 `visual_dialog` and `vqa` are trained end to end on real data. The other three
 ship models and tests but no data pipeline — AVSD's features went with the same
