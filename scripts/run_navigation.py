@@ -10,11 +10,15 @@ ends. That is the usual A2C arrangement, and it is required rather than merely
 faster here: the attention batch-normalizes its interaction grid, which is
 undefined on a batch of one.
 
-Reports the two standard measures. Pass `--test_episodes` to score the published
-fixed set of 3,914 episodes -- which pins the scene, the target instance and the
-start pose -- rather than episodes sampled from the held-out scenes. Only the
-fixed set is comparable to published numbers; sampling gives an easier task, since
-any instance of the target class counts and the start poses differ.
+Checkpoints are selected on the **val** episodes and the winner is scored once on
+the **test** episodes, which is what the original's `full_eval.py` does. Selecting
+on the set you report is how a number quietly becomes optimistic, and the two
+splits exist precisely so it need not be.
+
+Both are the published fixed episode sets -- each pinning the scene, the target
+instance and the start pose -- rather than episodes sampled from held-out scenes.
+Only those are comparable to published numbers: sampling gives an easier task,
+since any instance of the target class counts and the start poses differ.
 
     success    fraction of episodes that end with `Done` while the target is visible
     SPL        success weighted by how close the route was to the shortest one,
@@ -133,9 +137,14 @@ def main():
     parser.add_argument("--eval_every", type=int, default=5000)
     parser.add_argument("--eval_episodes", type=int, default=200)
     parser.add_argument(
+        "--val_episodes",
+        default=None,
+        help="JSON from scripts/convert_nav_test_split.py --split val. Selects the checkpoint.",
+    )
+    parser.add_argument(
         "--test_episodes",
         default=None,
-        help="JSON from scripts/convert_nav_test_split.py. The only setting comparable to published numbers.",
+        help="Scored once, by the checkpoint val selected. Never used to choose anything.",
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -152,11 +161,14 @@ def main():
     test_scenes = load_scenes(offline, split="test")
     logger.info(f"{len(train_scenes)} train scenes, {len(test_scenes)} test scenes, glove dim {targets.dim}")
 
-    fixed_episodes = None
+    by_name = {scene.name: scene for scene in test_scenes}
+    val_episodes = test_episodes = None
+    if args.val_episodes:
+        val_episodes = load_test_episodes(args.val_episodes, by_name, args.max_steps)
+        logger.info(f"selecting on {len(val_episodes)} val episodes")
     if args.test_episodes:
-        by_name = {scene.name: scene for scene in test_scenes}
-        fixed_episodes = load_test_episodes(args.test_episodes, by_name, args.max_steps)
-        logger.info(f"scoring the published set: {len(fixed_episodes)} fixed episodes")
+        test_episodes = load_test_episodes(args.test_episodes, by_name, args.max_steps)
+        logger.info(f"final score on {len(test_episodes)} test episodes")
 
     sample = train_scenes[0].feature(next(iter(train_scenes[0].states)))
     policy = NavigationPolicy(
@@ -172,7 +184,7 @@ def main():
     optimizer = torch.optim.Adam(policy.parameters(), lr=args.learning_rate)
 
     recent = deque(maxlen=1000)
-    best_spl = -1.0
+    best_success = -1.0
     episodes_done = 0
     next_eval = args.eval_every
 
@@ -251,22 +263,31 @@ def main():
             next_eval += args.eval_every
             success, spl = evaluate(
                 policy, test_scenes, targets, args.device, args.eval_episodes, args.max_steps,
-                fixed=fixed_episodes,
+                fixed=val_episodes,
             )
             logger.info(
                 f"{episodes_done} episodes: train success {np.mean(recent) if recent else 0:.3f}  "
-                f"HELD-OUT success {success:.3f}  SPL {spl:.3f}"
+                f"VAL success {success:.3f}  SPL {spl:.3f}"
             )
-            if spl > best_spl:
-                best_spl = spl
+            # Selection is on val success, as in the original's full_eval.py.
+            if success > best_success:
+                best_success = success
                 policy.save_pretrained(args.output_dir)
-                logger.info(f"  saved to {args.output_dir}")
+                logger.info(f"  saved to {args.output_dir} (best on val)")
 
-    success, spl = evaluate(
-        policy, test_scenes, targets, args.device, 1000, args.max_steps, fixed=fixed_episodes
-    )
-    kind = f"the published {len(fixed_episodes)} episodes" if fixed_episodes else "1000 sampled episodes"
-    logger.info(f"final, over {kind}: success {success:.3f}  SPL {spl:.3f}")
+    # Score the val-selected checkpoint once on test, and nothing else.
+    if test_episodes is not None:
+        best = NavigationPolicy.from_pretrained(args.output_dir).to(args.device)
+        success, spl = evaluate(
+            best, test_scenes, targets, args.device, 0, args.max_steps, fixed=test_episodes
+        )
+        logger.info(
+            f"val-selected checkpoint on {len(test_episodes)} TEST episodes: "
+            f"success {success:.3f}  SPL {spl:.3f}"
+        )
+    else:
+        success, spl = evaluate(policy, test_scenes, targets, args.device, 1000, args.max_steps)
+        logger.info(f"final, over 1000 sampled episodes: success {success:.3f}  SPL {spl:.3f}")
 
 
 if __name__ == "__main__":
