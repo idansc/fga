@@ -242,6 +242,7 @@ python scripts/run_visual_dialog.py \
 | [Idan/fga-ensemble](https://huggingface.co/Idan/fga-ensemble) | The five members of 5×FGA — MRR 68.43 together |
 | [Idan/fga-vqa](https://huggingface.co/Idan/fga-vqa) | Open-ended VQA v1 — 61.97 on val2014 |
 | [Idan/fga-navigation](https://huggingface.co/Idan/fga-navigation) | Target-driven navigation — 0.421 success, 0.167 SPL |
+| [Idan/fga-vqa-trainval](https://huggingface.co/Idan/fga-vqa-trainval) | Open-ended VQA trained on train+val, with test2015 predictions |
 
 The ensemble members are subfolders, so the reported 5×FGA number can be
 reproduced rather than taken on trust:

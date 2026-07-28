@@ -73,10 +73,11 @@ def main():
                 ids = [word_to_id.get(w, 0) for w in TOKEN.findall(question["question"].lower())][:length]
                 token_ids[i, : len(ids)] = ids
 
-            rows = [row_of[q["image_id"]] for q in batch]
-            order = np.argsort(rows)  # h5 fancy indexing needs increasing indices
-            features = np.empty((len(batch), *h5["features"].shape[1:]), dtype=np.float32)
-            features[order] = h5["features"][np.asarray(rows)[order].tolist()]
+            # h5py fancy indexing needs strictly increasing indices, and several
+            # questions share an image -- so gather each row once, then expand.
+            rows = np.asarray([row_of[q["image_id"]] for q in batch])
+            unique, inverse = np.unique(rows, return_inverse=True)
+            features = h5["features"][unique.tolist()].astype(np.float32)[inverse]
             # The same per-region normalization the dataset applies in training.
             features /= np.maximum(np.linalg.norm(features, axis=-1, keepdims=True), 1e-6)
 

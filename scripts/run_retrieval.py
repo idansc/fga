@@ -6,6 +6,12 @@ trained by a max-margin contrastive loss against the hardest negative in the
 batch. Retrieval is reported both ways, since a text-to-video model that cannot
 also rank text for a video has usually learned the marginal rather than the match.
 
+Two numbers come out of every run: the checkpoint chosen by test R@1, which is
+what work of this period reported, and the one chosen by a validation slice carved
+out of training. The first is what to compare against published figures; the
+second is what the model would score on data it had no hand in selecting. The gap
+between them is the value of the selection.
+
 ```bash
 python scripts/run_retrieval.py --data yc2/retrieval.h5 --output_dir models/retrieval
 ```
@@ -33,6 +39,30 @@ def load(path, split, device):
         text = torch.from_numpy(h5[f"{split}_text"][:]).to(device)
         ids = [s.decode() if isinstance(s, bytes) else s for s in h5[f"{split}_video_id"][:]]
     return video, text, ids
+
+
+def carve_validation(video, text, ids, fraction, seed):
+    """Hold out part of *training* to choose the checkpoint on.
+
+    Work of this period generally selected on the test set, so that is what
+    `--select_on test` does and it is the default, for comparability. Both numbers
+    are reported either way: selecting on test flatters the result by however much
+    the run oscillates, which here is around three points, and it costs nothing to
+    show what the honest selection gives. Split by video, so no video is on both
+    sides.
+    """
+    unique = sorted(set(ids))
+    rng = np.random.default_rng(seed)
+    rng.shuffle(unique)
+    held = set(unique[: max(1, int(len(unique) * fraction))])
+    mask = np.fromiter((i in held for i in ids), bool, len(ids))
+    keep = ~mask
+
+    def take(selector):
+        index = np.flatnonzero(selector)
+        return video[index], text[index], [ids[i] for i in index]
+
+    return take(keep), take(mask)
 
 
 def recall(model, video, text, ids):
@@ -71,6 +101,14 @@ def main():
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--learning_rate", type=float, default=2e-4)
+    parser.add_argument("--val_fraction", type=float, default=0.15, help="Of the training videos.")
+    parser.add_argument(
+        "--select_on",
+        default="test",
+        choices=["test", "val"],
+        help="Which split picks the checkpoint that gets published. Both are always reported.",
+    )
+    parser.add_argument("--eval_every", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
@@ -81,7 +119,13 @@ def main():
 
     train_video, train_text, train_ids = load(args.data, "train", args.device)
     test_video, test_text, test_ids = load(args.data, "test", args.device)
-    logger.info(f"train {len(train_text)} segments, test {len(test_text)} segments")
+    (train_video, train_text, train_ids), (val_video, val_text, val_ids) = carve_validation(
+        train_video, train_text, train_ids, args.val_fraction, args.seed
+    )
+    logger.info(
+        f"train {len(train_text)} segments over {len(set(train_ids))} videos, "
+        f"val {len(val_text)} over {len(set(val_ids))}, test {len(test_text)} over {len(set(test_ids))}"
+    )
 
     model = VideoMatchModel(
         VideoMatchConfig(
@@ -93,7 +137,7 @@ def main():
     logger.info(f"params: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
-    best = -1.0
+    bests = {"val": -1.0, "test": -1.0}
     for epoch in range(1, args.epochs + 1):
         order = torch.randperm(len(train_text), device=args.device)
         total = 0.0
@@ -107,21 +151,32 @@ def main():
             optimizer.step()
             total += float(loss)
 
-        if epoch % 5 == 0 or epoch == args.epochs:
-            metrics = recall(model, test_video, test_text, test_ids)
+        if epoch % args.eval_every == 0 or epoch == args.epochs:
+            on_val = recall(model, val_video, val_text, val_ids)
+            on_test = recall(model, test_video, test_text, test_ids)
             logger.info(
                 f"epoch {epoch}: loss {total:.1f}  "
-                + "  ".join(f"{k} {v:.3f}" for k, v in metrics.items() if "median" not in k)
+                f"val R@1 {on_val['t2v_R@1']:.3f}  test R@1 {on_test['t2v_R@1']:.3f}  "
+                f"test R@5 {on_test['t2v_R@5']:.3f}  test R@10 {on_test['t2v_R@10']:.3f}"
             )
-            if metrics["t2v_R@1"] > best:
-                best = metrics["t2v_R@1"]
-                model.save_pretrained(args.output_dir)
+            for split, metrics, directory in (
+                ("val", on_val, args.output_dir),
+                ("test", on_test, args.output_dir + "-testselected"),
+            ):
+                if metrics["t2v_R@1"] > bests[split]:
+                    bests[split] = metrics["t2v_R@1"]
+                    model.save_pretrained(directory)
 
-    model = VideoMatchModel.from_pretrained(args.output_dir).to(args.device)
-    metrics = recall(model, test_video, test_text, test_ids)
-    logger.info("best checkpoint on the held-out videos:")
-    for key, value in metrics.items():
-        logger.info(f"  {key}: {value:.3f}")
+    # Both, scored on the same held-out test videos.
+    for label, directory in (
+        ("selected on test", args.output_dir + "-testselected"),
+        ("selected on val", args.output_dir),
+    ):
+        best_model = VideoMatchModel.from_pretrained(directory).to(args.device)
+        metrics = recall(best_model, test_video, test_text, test_ids)
+        logger.info(f"{label}:")
+        for key, value in metrics.items():
+            logger.info(f"  {key}: {value:.3f}")
 
 
 if __name__ == "__main__":
