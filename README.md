@@ -505,7 +505,7 @@ One package per task, and the whole set at a glance:
 | `vqa` | open-ended VQA | question, image | classification |
 | `video_dialog` | audio-visual scene-aware dialog | question, 4 video streams, audio | decoder state |
 | `video_retrieval` | text-to-video retrieval | clips, query words | contrastive score |
-| `navigation` | target-driven navigation | target object, observation grid | policy + value |
+| `navigation` | [target-driven navigation](https://arxiv.org/abs/2104.09807) | target object, observation grid | policy + value |
 
 ```python
 from fga.tasks.video_dialog import AVSDConfig, AVSDEncoder
@@ -653,5 +653,17 @@ If you use the ternary factor or the VQA model, please also cite:
   author={Schwartz, Idan and Schwing, Alexander G and Hazan, Tamir},
   booktitle={Advances in Neural Information Processing Systems},
   year={2017}
+}
+```
+
+If you use the navigation model, its environment or its episode splits, please
+also cite:
+
+```bibtex
+@inproceedings{mayo2021visual,
+  title={Visual Navigation with Spatial Attention},
+  author={Mayo, Bar and Hazan, Tamir and Tal, Ayellet},
+  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2021}
 }
 ```
