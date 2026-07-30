@@ -26,13 +26,14 @@ import torch.nn as nn
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import ModelOutput
 
-from ...attention import FactorGraphAttention
+from ...attention import FactorGraphAttention, Modality
 
 __all__ = ["AVSDConfig", "AVSDEncoder", "AVSDEncoderOutput", "MODALITY_NAMES"]
 
 
-def _modality_names(num_streams: int):
-    return ("question",) + tuple(f"video_{i}" for i in range(num_streams)) + ("audio",)
+def _modality_names(num_streams: int, num_frames: int = 0):
+    names = ("question",) + tuple(f"video_{i}" for i in range(num_streams)) + ("audio",)
+    return names + (("frames",) if num_frames else ())
 
 
 #: Default modality order: question, four video streams, audio.
@@ -62,6 +63,15 @@ class AVSDConfig(PretrainedConfig):
         history_dim (`int`, *optional*, defaults to 256):
             Dimension of the encoded dialog history, concatenated with the
             attended question to form the decoder state.
+        num_video_frames (`int`, *optional*, defaults to 0):
+            Frames attended *within*, each carrying its own conv grid. `0` leaves
+            the model on the pooled streams alone. The frames share one set of
+            factor weights the way Visual Dialog's dialog rounds do, so the cost
+            of a frame is one more row in a batched factor, not another factor.
+        num_frame_regions (`int`, *optional*, defaults to 49):
+            Regions per frame, 7x7 for a VGG19 conv5 grid.
+        frame_dim (`int`, *optional*, defaults to 512):
+            Channels of the incoming per-frame conv maps, before projection.
         use_sizes (`bool`, *optional*, defaults to `False`):
             Give the pairwise factors explicit entity counts. The original leaves
             this off (`size_flag=False`), which falls back to mean-marginalizing
@@ -81,6 +91,9 @@ class AVSDConfig(PretrainedConfig):
         max_question_length: int = 10,
         num_audio_steps: int = 10,
         history_dim: int = 256,
+        num_video_frames: int = 0,
+        num_frame_regions: int = 49,
+        frame_dim: int = 512,
         use_sizes: bool = False,
         **kwargs,
     ):
@@ -93,12 +106,15 @@ class AVSDConfig(PretrainedConfig):
         self.max_question_length = max_question_length
         self.num_audio_steps = num_audio_steps
         self.history_dim = history_dim
+        self.num_video_frames = num_video_frames
+        self.num_frame_regions = num_frame_regions
+        self.frame_dim = frame_dim
         self.use_sizes = use_sizes
         super().__init__(**kwargs)
 
     @property
     def modality_names(self):
-        return _modality_names(self.num_video_streams)
+        return _modality_names(self.num_video_streams, self.num_video_frames)
 
 
 @dataclass
@@ -111,6 +127,9 @@ class AVSDEncoderOutput(ModelOutput):
             response decoder is conditioned on.
         temporal_state (`torch.FloatTensor` of shape `(batch, hidden_size)`):
             The audio and video streams fused across the stream axis.
+        temporal_cell (`torch.FloatTensor` of shape `(batch, hidden_size)`):
+            The cell half of that fusion, so a decoder can start from the whole
+            state rather than half of it.
         pooled_modalities (`Dict[str, torch.FloatTensor]`, *optional*):
             The attended representation of each modality.
         attentions (`Tuple[torch.FloatTensor]`, *optional*):
@@ -120,6 +139,7 @@ class AVSDEncoderOutput(ModelOutput):
 
     state: Optional[torch.FloatTensor] = None
     temporal_state: Optional[torch.FloatTensor] = None
+    temporal_cell: Optional[torch.FloatTensor] = None
     pooled_modalities: Optional[dict] = None
     attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
 
@@ -139,16 +159,36 @@ class AVSDEncoder(PreTrainedModel):
         self.video_projection = nn.Conv1d(config.video_dim, hidden, 1)
         self.audio_projection = nn.Conv1d(config.audio_dim, hidden, 1)
 
-        sizes = None
-        if config.use_sizes:
-            sizes = [config.max_question_length] + [config.num_video_regions] * streams + [config.num_audio_steps]
+        frames = config.num_video_frames
+        self.frame_projection = nn.Conv1d(config.frame_dim, hidden, 1) if frames else None
 
-        self.attention = FactorGraphAttention(
-            embed_dims=[config.question_dim] + [hidden] * streams + [hidden],
-            num_entities=sizes,
-            modality_names=list(config.modality_names),
-            use_prior=True,
-        )
+        def size(value):
+            return value if config.use_sizes else None
+
+        modalities = [Modality("question", dim=config.question_dim, size=size(config.max_question_length))]
+        modalities += [Modality(f"video_{i}", dim=hidden, size=size(config.num_video_regions)) for i in range(streams)]
+        modalities.append(Modality("audio", dim=hidden, size=size(config.num_audio_steps)))
+        if frames:
+            # Every frame is the same kind of thing, so they share one set of
+            # factors -- the mechanism Visual Dialog uses for its dialog rounds.
+            # Without it, forty-eight frames would mean forty-eight copies of
+            # every factor, and a graph that no longer fits.
+            #
+            # They are wired to the question, the audio and the pooled streams,
+            # but not to each other: a frame-to-frame factor would be quadratic
+            # in the frame count, and the LSTM downstream already compares frames
+            # once attention has chosen where to look inside each.
+            modalities.append(
+                Modality(
+                    "frames",
+                    dim=hidden,
+                    size=size(config.num_frame_regions),
+                    repeats=frames,
+                    connected_to=("question", "audio", *(f"video_{i}" for i in range(streams))),
+                )
+            )
+
+        self.attention = FactorGraphAttention.from_modalities(modalities, use_prior=True)
 
         # Fuse the attended audio and video streams along the stream axis, so the
         # model can compare moments after choosing where to look inside each.
@@ -162,8 +202,12 @@ class AVSDEncoder(PreTrainedModel):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.LSTM):
+            # Xavier for recurrent weights, He for the rest -- the original's
+            # `initialize_model_weights(model, "he", "xavier")`. He is scaled for a
+            # ReLU; an LSTM's gates are sigmoid and tanh, so it comes out about
+            # twice too large.
             for name, param in module.named_parameters():
-                nn.init.zeros_(param) if name.startswith("bias") else nn.init.kaiming_normal_(param)
+                nn.init.zeros_(param) if name.startswith("bias") else nn.init.xavier_normal_(param)
 
     def forward(
         self,
@@ -172,6 +216,7 @@ class AVSDEncoder(PreTrainedModel):
         audio_features: torch.FloatTensor,
         history_state: Optional[torch.FloatTensor] = None,
         question_lengths: Optional[torch.LongTensor] = None,
+        frame_features: Optional[torch.FloatTensor] = None,
         output_attentions: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ):
@@ -188,6 +233,10 @@ class AVSDEncoder(PreTrainedModel):
             question_lengths (`torch.LongTensor` of shape `(batch,)`, *optional*):
                 Real token count per question. Used as the attention prior, which
                 marks the final word — the same length cue Visual Dialog uses.
+            frame_features (`torch.FloatTensor` of shape `(batch, num_video_frames, num_frame_regions, frame_dim)`, *optional*):
+                Per-frame conv grids. Required when `num_video_frames` is set:
+                these are what let attention ask *where* in a frame, which the
+                spatially pooled streams cannot answer.
         """
         return_dict = return_dict if return_dict is not None else self.config.return_dict
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -198,36 +247,65 @@ class AVSDEncoder(PreTrainedModel):
         video = video.transpose(1, 2).view(batch, streams, regions, -1)
         audio = self.audio_projection(audio_features.transpose(1, 2)).transpose(1, 2)
 
+        num_frames = self.config.num_video_frames
+        if num_frames:
+            if frame_features is None:
+                raise ValueError(
+                    f"This encoder was configured with num_video_frames={num_frames}, so it needs "
+                    "frame_features of shape (batch, frames, regions, frame_dim)."
+                )
+            regions_per_frame = frame_features.size(2)
+            # The shared factors index their rows batch-major, repeat-minor, which
+            # is exactly what flattening `(batch, frames, ...)` gives.
+            flat = frame_features.reshape(batch * num_frames, regions_per_frame, -1)
+            frames = self.frame_projection(flat.transpose(1, 2)).transpose(1, 2)
+
         # Only the question carries a prior; the paper leaves the rest uniform.
         prior = torch.zeros(batch, question_states.size(1), device=question_states.device)
         if question_lengths is not None:
             index = (question_lengths.long() - 1).clamp_(0, question_states.size(1) - 1)
             prior[torch.arange(batch, device=prior.device), index] = 1
-        priors = [prior] + [None] * (streams + 1)
+        priors = [prior] + [None] * (streams + 1 + bool(num_frames))
 
         modalities = [question_states, *[video[:, i] for i in range(streams)], audio]
+        if num_frames:
+            modalities.append(frames)
         attended = self.attention(modalities, priors=priors, return_weights=True)
         attended, weights = attended if output_attentions else (attended[0], None)
 
+        pooled_frames = None
+        if num_frames:
+            # The shared entry comes back as one row per (example, frame).
+            pooled_frames = attended[-1].view(batch, num_frames, -1)
+            per_modality, attended = attended, attended[:-1]
+        else:
+            per_modality = attended
         pooled_question, pooled_streams, pooled_audio = attended[0], attended[1:-1], attended[-1]
 
-        # Audio first, then the streams in order, as one short sequence.
+        # Audio first, then the streams in order, as one short sequence. The
+        # attended frames follow in time order, so the LSTM's final state carries
+        # what the video did, after attention has chosen where to look in each.
         sequence = torch.stack([pooled_audio, *pooled_streams], dim=1)
-        _, (temporal_state, _) = self.temporal(sequence)
-        temporal_state = temporal_state[-1]
+        if pooled_frames is not None:
+            sequence = torch.cat((sequence, pooled_frames), dim=1)
+        # Both halves of the state travel: a decoder initialized from this needs
+        # the cell as well as the hidden, which is how the original wires it.
+        _, (temporal_state, temporal_cell) = self.temporal(sequence)
+        temporal_state, temporal_cell = temporal_state[-1], temporal_cell[-1]
 
         state = pooled_question
         if history_state is not None:
             state = torch.cat((pooled_question, history_state), dim=1)
 
-        pooled = dict(zip(self.config.modality_names, attended))
+        pooled = dict(zip(self.config.modality_names, per_modality))
         if not return_dict:
-            output = (state, temporal_state, pooled)
+            output = (state, temporal_state, temporal_cell, pooled)
             return output + ((tuple(weights),) if weights is not None else ())
 
         return AVSDEncoderOutput(
             state=state,
             temporal_state=temporal_state,
+            temporal_cell=temporal_cell,
             pooled_modalities=pooled,
             attentions=tuple(weights) if weights is not None else None,
         )
