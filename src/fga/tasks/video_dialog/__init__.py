@@ -9,5 +9,18 @@ Ported from https://github.com/idansc/simple-avsd.
 """
 
 from .modeling_avsd import MODALITY_NAMES, AVSDConfig, AVSDEncoder, AVSDEncoderOutput
+from .modeling_generation import (
+    AVSDForResponseGeneration,
+    AVSDGenerationConfig,
+    AVSDGenerationOutput,
+)
 
-__all__ = ["MODALITY_NAMES", "AVSDConfig", "AVSDEncoder", "AVSDEncoderOutput"]
+__all__ = [
+    "MODALITY_NAMES",
+    "AVSDConfig",
+    "AVSDEncoder",
+    "AVSDEncoderOutput",
+    "AVSDForResponseGeneration",
+    "AVSDGenerationConfig",
+    "AVSDGenerationOutput",
+]

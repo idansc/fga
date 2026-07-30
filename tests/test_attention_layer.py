@@ -405,3 +405,29 @@ def test_masked_attention_has_finite_gradients():
     assert torch.isfinite(image.grad).all()
     for name, parameter in attention.named_parameters():
         assert parameter.grad is None or torch.isfinite(parameter.grad).all(), name
+
+
+def test_pairwise_handles_differing_dims_without_entity_counts():
+    """Mean-marginalization must still respect each modality's own width.
+
+    With `num_entities` unset the pairwise factors mean-marginalize, which is the
+    path taken when entity counts vary per example. That must not change how wide
+    each modality's projection is.
+    """
+    attention = FactorGraphAttention(embed_dims=[256, 512], num_entities=None).eval()
+    text, video = torch.randn(2, 20, 256), torch.randn(2, 48, 512)
+
+    with torch.no_grad():
+        pooled_text, pooled_video = attention(text, video)
+
+    assert pooled_text.shape == (2, 256)
+    assert pooled_video.shape == (2, 512)
+
+
+def test_pairwise_self_interaction_still_mirrors_x():
+    """A factor with no second modality projects both sides from x's width."""
+    from fga.attention.potentials import Pairwise
+
+    factor = Pairwise(embed_x_size=64, x_spatial_dim=7, self_interaction=True)
+    assert factor.embed_X.in_features == 64
+    assert factor.embed_Y.in_features == 64

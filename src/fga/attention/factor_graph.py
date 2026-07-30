@@ -514,7 +514,14 @@ class FactorGraphAttention(nn.Module):
 
         for i in range(self.n_modalities):
             if self.use_prior:
-                prior = priors[i] if priors[i] is not None else torch.zeros_like(util_factors[i][0])
+                # A prior is one number per entity. Shaping the absent one after
+                # `util_factors[i][0]` assumed that first potential was a plain
+                # `(batch, entities)` -- but a modality wired to a weight-sharing
+                # neighbour receives a `(batch, repeats, entities)` block first,
+                # and copying *that* silently contributed `repeats` channels where
+                # one was counted. Taking the shape from the modality instead is
+                # right whatever order the potentials arrive in.
+                prior = priors[i] if priors[i] is not None else modalities[i].new_zeros(modalities[i].shape[:2])
                 util_factors[i].append(prior)
 
             # (batch, num_potentials, entities) -> one weighted sum per entity.

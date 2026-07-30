@@ -106,7 +106,12 @@ class Pairwise(nn.Module):
         self_interaction: bool = False,
     ):
         super().__init__()
-        embed_y_size = embed_y_size if y_spatial_dim is not None else embed_x_size
+        # Y falls back to X's width only for a self-interaction, which is what
+        # "no y dimension given" means. Keying this off `y_spatial_dim` instead
+        # conflated it with "entity counts unknown", so any pair of differently
+        # sized modalities silently built `embed_Y` for the wrong width and only
+        # failed once a tensor reached it.
+        embed_y_size = embed_y_size if embed_y_size is not None else embed_x_size
         self.y_spatial_dim = y_spatial_dim if y_spatial_dim is not None else x_spatial_dim
 
         self.embed_size = max(embed_x_size, embed_y_size)

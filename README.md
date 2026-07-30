@@ -242,6 +242,7 @@ python scripts/run_visual_dialog.py \
 | [Idan/fga-ensemble](https://huggingface.co/Idan/fga-ensemble) | The five members of 5×FGA — MRR 68.43 together |
 | [Idan/fga-vqa](https://huggingface.co/Idan/fga-vqa) | Open-ended VQA v1 — 61.97 on val2014 |
 | [Idan/fga-navigation](https://huggingface.co/Idan/fga-navigation) | Target-driven navigation — 0.421 success, 0.167 SPL |
+| [Idan/fga-vqa-trainval](https://huggingface.co/Idan/fga-vqa-trainval) | Open-ended VQA trained on train+val, with test2015 predictions |
 
 The ensemble members are subfolders, so the reported 5×FGA number can be
 reproduced rather than taken on trust:
@@ -639,7 +640,7 @@ Each is also ported onto this layer under `fga.tasks/` — see
 
 ## Citation
 
-Please cite Factor Graph Attention if you use this work in your research:
+Please cite Factor Graph Attention if you use this work:
 
 ```bibtex
 @inproceedings{schwartz2019factor,
@@ -651,7 +652,11 @@ Please cite Factor Graph Attention if you use this work in your research:
 }
 ```
 
-If you use the ternary factor or the VQA model, please also cite:
+Each task in this repository comes from its own paper. Please cite the one whose
+model, data or protocol you use — the datasets, splits and evaluation code are
+theirs, and the numbers here rest on them.
+
+**Visual Question Answering**, the ternary factor over (region, word, answer):
 
 ```bibtex
 @inproceedings{schwartz2017high,
@@ -662,8 +667,31 @@ If you use the ternary factor or the VQA model, please also cite:
 }
 ```
 
-If you use the navigation model, its environment or its episode splits, please
-also cite:
+**Audio-visual scene-aware dialog**:
+
+```bibtex
+@inproceedings{schwartz2019simple,
+  title={A Simple Baseline for Audio-Visual Scene-Aware Dialog},
+  author={Schwartz, Idan and Schwing, Alexander G and Hazan, Tamir},
+  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2019}
+}
+```
+
+**Text-to-video retrieval**:
+
+```bibtex
+@inproceedings{ali2022video,
+  title={Video and Text Matching with Conditioned Embeddings},
+  author={Ali, Ameen and Schwartz, Idan and Hazan, Tamir and Wolf, Lior},
+  booktitle={Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision (WACV)},
+  pages={478--487},
+  year={2022}
+}
+```
+
+**Target-driven visual navigation**, whose environment and episode splits this
+repository evaluates on:
 
 ```bibtex
 @inproceedings{mayo2021visual,
@@ -673,3 +701,7 @@ also cite:
   year={2021}
 }
 ```
+
+**The 2020 Visual Dialog Challenge submission**, on the MRR/NDCG trade-off the
+dense finetuning and ensembling sections explore:
+[idansc/mrr-ndcg](https://github.com/idansc/mrr-ndcg).
