@@ -1,23 +1,33 @@
 #!/usr/bin/env python
 """Build a text-to-video retrieval set from YouCook2.
 
-VideoMatch was published on DiDeMo and ActivityNet Captions, whose pre-extracted
-features the paper distributes through a Google Drive folder that now returns 404.
-YouCook2 is a stand-in of the same shape -- a video, timestamped segments, and a
-sentence per segment -- with InternVideo clip features available on the Hub.
-
-Two things this is *not*. It is not the paper's benchmark, so the numbers do not
-compare to its published ones. And the feature dump covers YouCook2's validation
-videos only, so the split here is over those 436 videos rather than the official
-train/val division; it is held out by *video*, so no video appears on both sides.
-
-Each captioned segment becomes one example: the clip features overlapping its
+Each captioned segment becomes one example: the video features overlapping its
 timestamps, and the sentence as GloVe vectors.
 
+The split comes from YouCook2's own `subset` field -- 1,333 training videos with
+10,337 segments, 457 validation videos with 3,492 -- which is what the retrieval
+literature reports on and what
+[Video and Text Matching with Conditioned Embeddings](https://arxiv.org/abs/2110.11298)
+uses. Its loader keys off the same field.
+
+`--features_dir` takes either layout:
+
+* `.npy` per video, from `scripts/extract_resnet_video.py`. The reference loads
+  `{video_id}_resnet.npy` from a path on the author's own machine, so these have
+  to be re-extracted; ResNet-152 at 1 fps reproduces the shape it expects.
+* `.pth.tar` under a per-recipe subdirectory, which is how the InternVideo dump on
+  the Hub is arranged. That dump covers the *validation* videos only, so it cannot
+  build the official split -- passing it here will simply leave the training half
+  nearly empty, which the printed counts will show.
+
+A segment's window is located proportionally, `start / duration * len(features)`,
+the way the reference does it, so the frame rate the features were extracted at
+does not have to be known here.
+
 ```bash
-python scripts/prepare_youcook.py --features_dir yc2/internvideo_MM_L14_features \
+python scripts/prepare_youcook.py --features_dir yc2_resnet \
     --annotations yc2/YouCookII/annotations/youcookii_annotations_trainval.json \
-    --glove glove/glove.6B.300d.txt --output yc2/retrieval.h5
+    --glove glove/glove.6B.300d.txt --output yc2/retrieval_official.h5
 ```
 """
 
@@ -27,6 +37,7 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 
 import h5py
 import numpy as np
@@ -54,18 +65,27 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--max_clips", type=int, default=32, help="Clips kept per segment.")
     parser.add_argument("--max_words", type=int, default=20)
-    parser.add_argument("--test_fraction", type=float, default=0.2)
-    parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
     with open(args.annotations) as handle:
         database = json.load(handle)["database"]
     features = {
-        os.path.basename(p).replace(".pth.tar", ""): p
-        for p in glob.glob(os.path.join(args.features_dir, "*", "*.pth.tar"))
+        os.path.basename(p).replace(".pth.tar", "").replace(".npy", ""): p
+        for pattern in ("*.npy", os.path.join("*", "*.pth.tar"))
+        for p in glob.glob(os.path.join(args.features_dir, pattern))
     }
     videos = sorted(set(features) & set(database))
     print(f"{len(videos)} videos with both features and annotations")
+
+    have = Counter(database[v]["subset"] for v in videos)
+    want = Counter(v["subset"] for v in database.values())
+    for subset in ("training", "validation"):
+        print(f"  {subset}: {have[subset]} of {want[subset]} videos have features")
+    if have["training"] < 0.5 * want["training"]:
+        print(
+            "  warning: most training videos have no features, so this is not the "
+            "official split -- see the module docstring."
+        )
 
     words = set()
     for video in videos:
@@ -74,24 +94,35 @@ def main():
     glove = load_glove(args.glove, words)
     print(f"{len(words)} distinct words, {len(glove)} found in GloVe")
 
-    # Held out by video: a caption whose video was seen in training would be a
-    # much easier retrieval problem than the task intends.
-    rng = np.random.default_rng(args.seed)
-    order = rng.permutation(len(videos))
-    cut = int(len(videos) * (1 - args.test_fraction))
-    split_of = {videos[i]: ("train" if rank < cut else "test") for rank, i in enumerate(order)}
+    # YouCook2's own division. `test` is this repo's name for the reported split,
+    # which for YouCook2 retrieval is the validation subset -- the test subset's
+    # annotations were never released.
+    split_of = {
+        video: ("train" if database[video]["subset"] == "training" else "test") for video in videos
+    }
 
     rows = {"train": [], "test": []}
     for video in videos:
-        clips = torch.load(features[video], map_location="cpu", weights_only=False).float().numpy()
+        path = features[video]
+        clips = (
+            np.load(path).astype(np.float32)
+            if path.endswith(".npy")
+            else torch.load(path, map_location="cpu", weights_only=False).float().numpy()
+        )
+        clips = clips.reshape(len(clips), -1)
         duration = database[video]["duration"]
-        per_clip = duration / max(len(clips), 1)
 
         for segment in database[video]["annotations"]:
             start, end = segment["segment"]
-            first = int(start / per_clip)
-            last = max(first + 1, int(np.ceil(end / per_clip)))
-            window = clips[first:last][: args.max_clips]
+            # Proportional, as the reference does it, so the extraction frame rate
+            # never has to be known: a row index is a fraction of the way through.
+            first = int(np.floor(start / duration * len(clips)))
+            last = max(first + 1, int(np.ceil(end / duration * len(clips))) + 1)
+            window = clips[first:last]
+            if len(window) > args.max_clips:
+                # Even subsampling rather than the head, so a long segment is
+                # summarized instead of clipped to its opening seconds.
+                window = window[np.linspace(0, len(window) - 1, args.max_clips).astype(int)]
             if len(window) == 0:
                 continue
 
